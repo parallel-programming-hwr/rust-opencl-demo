@@ -1,3 +1,10 @@
+/*
+ * opencl demos with rust
+ * Copyright (C) 2020 trivernis
+ * See LICENSE for more information
+ */
+
+
 __kernel void check_prime(const int LOWER_PRIME_COUNT, __global const int *LOWER_PRIMES, __global const long *IN, __global bool *OUT) {
     int id = get_global_id(0);
     long num = IN[id];

@@ -1,3 +1,9 @@
+/*
+ * opencl demos with rust
+ * Copyright (C) 2020 trivernis
+ * See LICENSE for more information
+ */
+
 use crate::kernel_controller::KernelController;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
