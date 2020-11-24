@@ -66,7 +66,7 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
         println!(
             "Calculated {} primes in {:.4} ms: {:.4} checks/s",
             primes.len(),
-            start.elapsed().as_secs_f64() / 1000f64,
+            start.elapsed().as_secs_f64() * 1000f64,
             COUNT as f64 / start.elapsed().as_secs_f64()
         );
         sender.send(primes).unwrap();
