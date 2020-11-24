@@ -1,6 +1,7 @@
 use crate::kernel_controller::KernelController;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
+use std::mem;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
 use std::thread::{self, JoinHandle};
@@ -20,14 +21,14 @@ enum Opts {
 #[derive(StructOpt, Clone, Debug)]
 struct CalculatePrimes {
     /// The number to start with
-    #[structopt(default_value = "0")]
+    #[structopt(long = "start", default_value = "0")]
     start_offset: i64,
 
     /// The maximum number to calculate to
-    #[structopt(default_value = "9223372036854775807")]
+    #[structopt(long = "end", default_value = "9223372036854775807")]
     max_number: i64,
 
-    #[structopt(default_value = "primes.txt")]
+    #[structopt(short = "o", long = "output", default_value = "primes.txt")]
     output_file: PathBuf,
 }
 
@@ -63,10 +64,10 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
         println!("Filtering primes from {} numbers", numbers.len());
         let primes = controller.filter_primes(numbers)?;
         println!(
-            "Calculated {} primes in {} ms: {:.4} checks/s",
+            "Calculated {} primes in {:.4} ms: {:.4} checks/s",
             primes.len(),
-            start.elapsed().as_millis(),
-            COUNT as f64 / start.elapsed().as_secs() as f64
+            start.elapsed().as_secs_f64() / 1000f64,
+            COUNT as f64 / start.elapsed().as_secs_f64()
         );
         sender.send(primes).unwrap();
 
@@ -76,6 +77,7 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
         offset += COUNT as i64 * 2;
     }
 
+    mem::drop(sender);
     handle.join().unwrap();
 
     Ok(())
