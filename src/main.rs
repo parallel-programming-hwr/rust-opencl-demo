@@ -4,6 +4,7 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 use structopt::StructOpt;
 
 mod kernel_controller;
@@ -55,10 +56,18 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
         offset += 1;
     }
     loop {
+        let start = Instant::now();
         let numbers = (offset..(COUNT as i64 * 2 + offset))
             .step_by(2)
             .collect::<Vec<i64>>();
+        println!("Filtering primes from {} numbers", numbers.len());
         let primes = controller.filter_primes(numbers)?;
+        println!(
+            "Calculated {} primes in {} ms: {:.4} checks/s",
+            primes.len(),
+            start.elapsed().as_millis(),
+            COUNT as f64 / start.elapsed().as_secs() as f64
+        );
         sender.send(primes).unwrap();
 
         if (COUNT as i128 * 2 + offset as i128) > prime_opts.max_number as i128 {
