@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 ocl = "0.19.3"
 structopt = "0.3.20"
+lazy_static = "1.4.0"
