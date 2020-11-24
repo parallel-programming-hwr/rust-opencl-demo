@@ -46,7 +46,7 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
     let output = BufWriter::new(
         OpenOptions::new()
             .create(true)
-            .write(true)
+            .append(true)
             .open(prime_opts.output_file)
             .unwrap(),
     );
