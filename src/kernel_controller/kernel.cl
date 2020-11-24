@@ -23,8 +23,8 @@ __kernel void check_prime(const int LOWER_PRIME_COUNT, __global const int *LOWER
             }
         }
         if (prime && LOWER_PRIMES[LOWER_PRIME_COUNT - 1] < num) {
-            for (long i = LOWER_PRIMES[LOWER_PRIME_COUNT - 1]; i <= sqrt((double) num); i += 2) {
-                if (num % i == 0) {
+            for (long i = LOWER_PRIMES[LOWER_PRIME_COUNT - 1]; i <= sqrt((double) num); i += 6) {
+                if (num % (i - 2) == 0 || num % (i - 4) == 0) {
                     prime = false;
                     break;
                 }
