@@ -95,7 +95,8 @@ impl KernelController {
         let start = Instant::now();
         let mut prime_cache = PRIME_CACHE.lock();
 
-        if (prime_cache.len() + primes.len()) * size_of::<i64>() < self.available_memory()? as usize
+        if (prime_cache.len() + primes.len()) * size_of::<i64>()
+            < self.available_memory()? as usize / 4
         {
             prime_cache.append(&mut primes.clone());
             prime_cache.sort();
