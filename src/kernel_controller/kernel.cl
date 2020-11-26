@@ -5,16 +5,17 @@
  */
 
 
-__kernel void check_prime(const int LOWER_PRIME_COUNT, __global const int *LOWER_PRIMES, __global const long *IN, __global bool *OUT) {
+__kernel void check_prime(const int LOWER_PRIME_COUNT, __global const long *LOWER_PRIMES, __global const long *IN, __global bool *OUT) {
     int id = get_global_id(0);
     long num = IN[id];
     bool prime = true;
+    long limit = (long) sqrt((double) num) + 1;
 
     if (num < 3 || num % 2 == 0) {
         prime = false;
     } else {
         for (int i = 0; i < LOWER_PRIME_COUNT; i++) {
-            if (LOWER_PRIMES[i] >= num) {
+            if (LOWER_PRIMES[i] >= limit) {
                 break;
             }
             if (num % LOWER_PRIMES[i] == 0) {
@@ -29,8 +30,8 @@ __kernel void check_prime(const int LOWER_PRIME_COUNT, __global const int *LOWER
             start -= 3;
         }
 
-        if (prime && start < num) {
-            for (long i = start; i <= sqrt((double) num); i += 6) {
+        if (prime && start < limit) {
+            for (long i = start; i <= limit; i += 6) {
                 if (num % (i - 2) == 0 || num % (i - 4) == 0) {
                     prime = false;
                     break;

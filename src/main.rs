@@ -36,6 +36,9 @@ struct CalculatePrimes {
 
     #[structopt(short = "o", long = "output", default_value = "primes.txt")]
     output_file: PathBuf,
+
+    #[structopt(long = "timings-output", default_value = "timings.csv")]
+    timings_file: PathBuf,
 }
 
 fn main() -> ocl::Result<()> {
@@ -56,6 +59,17 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             .open(prime_opts.output_file)
             .unwrap(),
     );
+    let mut timings = BufWriter::new(
+        OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(prime_opts.timings_file)
+            .unwrap(),
+    );
+    timings
+        .write_all("offset,count,duration\n".as_bytes())
+        .unwrap();
     let (sender, handle) = create_write_thread(output);
 
     let mut offset = prime_opts.start_offset;
@@ -69,12 +83,18 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             .collect::<Vec<i64>>();
         println!("Filtering primes from {} numbers", numbers.len());
         let primes = controller.filter_primes(numbers)?;
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000f64;
+
         println!(
             "Calculated {} primes in {:.4} ms: {:.4} checks/s",
             primes.len(),
-            start.elapsed().as_secs_f64() * 1000f64,
+            elapsed_ms,
             COUNT as f64 / start.elapsed().as_secs_f64()
         );
+        timings
+            .write_all(format!("{},{},{}\n", offset, primes.len(), elapsed_ms).as_bytes())
+            .unwrap();
+        timings.flush().unwrap();
         sender.send(primes).unwrap();
 
         if (COUNT as i128 * 2 + offset as i128) > prime_opts.max_number as i128 {
