@@ -4,8 +4,11 @@
  * See LICENSE for more information
  */
 
+use ocl::core::DeviceInfo;
+use ocl::enums::DeviceInfoResult;
 use ocl::ProQue;
 use parking_lot::Mutex;
+use std::mem::size_of;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -19,7 +22,26 @@ impl KernelController {
             .src(include_str!("kernel.cl"))
             .dims(1 << 20)
             .build()?;
+        let device = pro_que.device();
+        println!("Using device {}", device.name()?);
+        println!("Vendor: {}", device.vendor()?);
+        println!(
+            "Global Mem Size: {} bytes",
+            device.info(DeviceInfo::GlobalMemSize)?
+        );
+        println!(
+            "Max Mem Alloc: {} bytes",
+            device.info(DeviceInfo::MaxMemAllocSize)?
+        );
+        println!();
         Ok(Self { pro_que })
+    }
+
+    fn available_memory(&self) -> ocl::Result<u64> {
+        match self.pro_que.device().info(DeviceInfo::GlobalMemSize)? {
+            DeviceInfoResult::GlobalMemSize(size) => Ok(size),
+            _ => Ok(0),
+        }
     }
 
     pub fn filter_primes(&self, input: Vec<i64>) -> ocl::Result<Vec<i64>> {
@@ -73,7 +95,8 @@ impl KernelController {
         let start = Instant::now();
         let mut prime_cache = PRIME_CACHE.lock();
 
-        if prime_cache.len() < 1024 * 1024 * 1024 {
+        if (prime_cache.len() + primes.len()) * size_of::<i64>() < self.available_memory()? as usize
+        {
             prime_cache.append(&mut primes.clone());
             prime_cache.sort();
             prime_cache.dedup();
