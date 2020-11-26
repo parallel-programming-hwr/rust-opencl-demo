@@ -8,6 +8,7 @@ use ocl::core::DeviceInfo;
 use ocl::enums::DeviceInfoResult;
 use ocl::ProQue;
 use parking_lot::Mutex;
+use std::cmp::max;
 use std::mem::size_of;
 use std::sync::Arc;
 use std::time::Instant;
@@ -44,8 +45,8 @@ impl KernelController {
         }
     }
 
-    pub fn filter_primes(&self, input: Vec<i64>) -> ocl::Result<Vec<i64>> {
-        lazy_static::lazy_static! {static ref PRIME_CACHE: Arc<Mutex<Vec<i64>>> = Arc::new(Mutex::new(get_lower_primes(2048)));}
+    pub fn filter_primes(&self, input: Vec<u64>) -> ocl::Result<Vec<u64>> {
+        lazy_static::lazy_static! {static ref PRIME_CACHE: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(get_primes(2048)));}
 
         let prime_buffer = self
             .pro_que
@@ -68,13 +69,14 @@ impl KernelController {
         let kernel = self
             .pro_que
             .kernel_builder("check_prime")
-            .arg(prime_buffer.len() as i32)
+            .arg(prime_buffer.len() as u32)
             .arg(&prime_buffer)
             .arg(&input_buffer)
             .arg(&output_buffer)
             .global_work_size(input.len())
             .build()?;
 
+        let start = Instant::now();
         unsafe {
             kernel.enq()?;
         }
@@ -82,15 +84,20 @@ impl KernelController {
         let mut output = vec![0u8; output_buffer.len()];
         output_buffer.read(&mut output).enq()?;
 
-        let mut input_o = vec![0i64; input_buffer.len()];
+        let mut input_o = vec![0u64; input_buffer.len()];
         input_buffer.read(&mut input_o).enq()?;
+
+        println!(
+            "GPU IO + Calculation took {} ms",
+            start.elapsed().as_secs_f64() * 1000f64
+        );
 
         let primes = input
             .iter()
             .enumerate()
             .filter(|(index, _)| output[*index] == 1)
             .map(|(_, v)| *v)
-            .collect::<Vec<i64>>();
+            .collect::<Vec<u64>>();
 
         let start = Instant::now();
         let mut prime_cache = PRIME_CACHE.lock();
@@ -113,8 +120,9 @@ impl KernelController {
 }
 
 /// Returns a list of prime numbers that can be used to speed up the divisibility check
-fn get_lower_primes(count: usize) -> Vec<i64> {
-    let mut primes = Vec::new();
+fn get_primes(count: usize) -> Vec<u64> {
+    let start = Instant::now();
+    let mut primes = Vec::with_capacity(count);
     let mut num = 3;
 
     while primes.len() < count {
@@ -123,10 +131,27 @@ fn get_lower_primes(count: usize) -> Vec<i64> {
         if num < 3 || num % 2 == 0 {
             is_prime = false;
         } else {
-            for i in (3..((num as f64).sqrt().ceil() as i64)).step_by(2) {
-                if num % i == 0 {
+            let check_stop = (num as f64).sqrt().ceil() as u64;
+            let mut free_check_start = 9;
+
+            for prime in primes.iter().take_while(|num| **num < check_stop) {
+                let prime = *prime;
+                free_check_start = prime;
+                if num % prime == 0 {
                     is_prime = false;
                     break;
+                }
+            }
+            if free_check_start < check_stop && is_prime {
+                free_check_start -= free_check_start % 3;
+                if free_check_start % 2 == 0 {
+                    free_check_start -= 3;
+                }
+                for i in (max(free_check_start, 9)..check_stop).step_by(6) {
+                    if num % (i - 2) == 0 || num % (i - 4) == 0 {
+                        is_prime = false;
+                        break;
+                    }
                 }
             }
         }
@@ -135,6 +160,24 @@ fn get_lower_primes(count: usize) -> Vec<i64> {
         }
         num += 2;
     }
+    println!(
+        "Generated {} primes on the cpu in {} ms",
+        count,
+        start.elapsed().as_secs_f64() * 1000f64
+    );
 
     primes
+}
+
+#[allow(dead_code)]
+fn is_prime(number: u64) -> bool {
+    if number < 3 || number % 2 == 0 {
+        return false;
+    }
+    for i in (9..(number as f64).sqrt().ceil() as u64).step_by(6) {
+        if number % (i - 2) == 0 || number % (i - 4) == 0 {
+            return false;
+        }
+    }
+    return true;
 }

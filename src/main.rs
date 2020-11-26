@@ -15,7 +15,6 @@ use std::time::Instant;
 use structopt::StructOpt;
 
 mod kernel_controller;
-const COUNT: usize = 1024 * 1024 * 64;
 
 #[derive(StructOpt, Clone, Debug)]
 #[structopt()]
@@ -28,17 +27,20 @@ enum Opts {
 struct CalculatePrimes {
     /// The number to start with
     #[structopt(long = "start", default_value = "0")]
-    start_offset: i64,
+    start_offset: u64,
 
     /// The maximum number to calculate to
     #[structopt(long = "end", default_value = "9223372036854775807")]
-    max_number: i64,
+    max_number: u64,
 
     #[structopt(short = "o", long = "output", default_value = "primes.txt")]
     output_file: PathBuf,
 
     #[structopt(long = "timings-output", default_value = "timings.csv")]
     timings_file: PathBuf,
+
+    #[structopt(long = "numbers-per-step", default_value = "33554432")]
+    numbers_per_step: usize,
 }
 
 fn main() -> ocl::Result<()> {
@@ -78,10 +80,14 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
     }
     loop {
         let start = Instant::now();
-        let numbers = (offset..(COUNT as i64 * 2 + offset))
+        let numbers = (offset..(prime_opts.numbers_per_step as u64 * 2 + offset))
             .step_by(2)
-            .collect::<Vec<i64>>();
-        println!("Filtering primes from {} numbers", numbers.len());
+            .collect::<Vec<u64>>();
+        println!(
+            "Filtering primes from {} numbers, offset: {}",
+            numbers.len(),
+            offset
+        );
         let primes = controller.filter_primes(numbers)?;
         let elapsed_ms = start.elapsed().as_secs_f64() * 1000f64;
 
@@ -89,18 +95,21 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             "Calculated {} primes in {:.4} ms: {:.4} checks/s",
             primes.len(),
             elapsed_ms,
-            COUNT as f64 / start.elapsed().as_secs_f64()
+            prime_opts.numbers_per_step as f64 / start.elapsed().as_secs_f64()
         );
+        println!();
         timings
             .write_all(format!("{},{},{}\n", offset, primes.len(), elapsed_ms).as_bytes())
             .unwrap();
         timings.flush().unwrap();
         sender.send(primes).unwrap();
 
-        if (COUNT as i128 * 2 + offset as i128) > prime_opts.max_number as i128 {
+        if (prime_opts.numbers_per_step as u128 * 2 + offset as u128)
+            > prime_opts.max_number as u128
+        {
             break;
         }
-        offset += COUNT as i64 * 2;
+        offset += prime_opts.numbers_per_step as u64 * 2;
     }
 
     mem::drop(sender);
@@ -109,7 +118,7 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
     Ok(())
 }
 
-fn create_write_thread(mut writer: BufWriter<File>) -> (Sender<Vec<i64>>, JoinHandle<()>) {
+fn create_write_thread(mut writer: BufWriter<File>) -> (Sender<Vec<u64>>, JoinHandle<()>) {
     let (tx, rx) = channel();
     let handle = thread::spawn(move || {
         for primes in rx {
