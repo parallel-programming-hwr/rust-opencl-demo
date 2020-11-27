@@ -10,7 +10,10 @@ __kernel void check_prime_cached(const uint LOWER_PRIME_COUNT, __global const ul
     ulong num = IN[id];
     ulong limit = (ulong) native_sqrt((double) num) + 1;
 
-    if (num < 3 || num % 2 == 0) {
+    if (num == 2 || num == 3) {
+        OUT[id] = true;
+        return;
+    } else if (num == 1) {
         return;
     } else {
         for (uint i = 0; i < LOWER_PRIME_COUNT; i++) {
@@ -31,10 +34,23 @@ __kernel void check_prime(__global const ulong *IN, __global bool *OUT) {
     ulong num = IN[id];
     ulong limit = (ulong) native_sqrt((double) num) + 1;
 
-    if (num < 3 || num % 2 == 0) {
+    if (num == 2 || num == 3) {
+        OUT[id] = true;
         return;
+    } else if (num == 1 || num % 2 == 0) {
+        return;
+    }
+    if (limit < 9) {
+        for (ulong i = 3; i <= limit; i++) {
+            if (num % i == 0) {
+                return;
+            }
+        }
     } else {
-        for (ulong i = 9; i <= limit; i += 6) {
+        if (num > 3 && num % 3 == 0) {
+            return;
+        }
+        for (ulong i = 9; i <= (limit + 6); i += 6) {
             if (num % (i - 2) == 0 || num % (i - 4) == 0) {
                 return;
             }

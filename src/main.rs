@@ -4,7 +4,8 @@
  * See LICENSE for more information
  */
 
-use crate::kernel_controller::KernelController;
+use crate::kernel_controller::{is_prime, KernelController};
+use rayon::prelude::*;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::mem;
@@ -41,6 +42,12 @@ struct CalculatePrimes {
 
     #[structopt(long = "numbers-per-step", default_value = "33554432")]
     numbers_per_step: usize,
+
+    #[structopt(long = "no-cache")]
+    no_cache: bool,
+
+    #[structopt(long = "cpu-validate")]
+    cpu_validate: bool,
 }
 
 fn main() -> ocl::Result<()> {
@@ -78,7 +85,9 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
     if offset % 2 == 0 {
         offset += 1;
     }
-    sender.send(vec![2]).unwrap();
+    if offset < 2 {
+        sender.send(vec![2]).unwrap();
+    }
     loop {
         let start = Instant::now();
         let numbers = (offset..(prime_opts.numbers_per_step as u64 * 2 + offset))
@@ -89,7 +98,11 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             numbers.len(),
             offset
         );
-        let primes = controller.filter_primes(numbers)?;
+        let primes = if prime_opts.no_cache {
+            controller.filter_primes_simple(numbers)?
+        } else {
+            controller.filter_primes(numbers)?
+        };
         let elapsed_ms = start.elapsed().as_secs_f64() * 1000f64;
 
         println!(
@@ -98,11 +111,28 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             elapsed_ms,
             prime_opts.numbers_per_step as f64 / start.elapsed().as_secs_f64()
         );
-        println!();
         timings
             .write_all(format!("{},{},{}\n", offset, primes.len(), elapsed_ms).as_bytes())
             .unwrap();
         timings.flush().unwrap();
+
+        if prime_opts.cpu_validate {
+            println!("Validating...");
+            let failures = primes
+                .par_iter()
+                .filter(|n| !is_prime(**n))
+                .collect::<Vec<&u64>>();
+            if failures.len() > 0 {
+                println!(
+                    "{} failures in prime calculation: {:?}",
+                    failures.len(),
+                    failures
+                );
+            } else {
+                println!("No failures found.");
+            }
+        }
+        println!();
         sender.send(primes).unwrap();
 
         if (prime_opts.numbers_per_step as u128 * 2 + offset as u128)

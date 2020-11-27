@@ -8,7 +8,6 @@ use ocl::core::DeviceInfo;
 use ocl::enums::DeviceInfoResult;
 use ocl::ProQue;
 use parking_lot::Mutex;
-use std::cmp::max;
 use std::mem::size_of;
 use std::sync::Arc;
 use std::time::Instant;
@@ -45,6 +44,50 @@ impl KernelController {
         }
     }
 
+    /// Filters all primes from the input without using a precalculated list of primes
+    /// for divisibility checks
+    pub fn filter_primes_simple(&self, input: Vec<u64>) -> ocl::Result<Vec<u64>> {
+        let input_buffer = self.pro_que.buffer_builder().len(input.len()).build()?;
+        input_buffer.write(&input[..]).enq()?;
+
+        let output_buffer = self
+            .pro_que
+            .buffer_builder()
+            .len(input.len())
+            .fill_val(0u8)
+            .build()?;
+
+        let kernel = self
+            .pro_que
+            .kernel_builder("check_prime")
+            .arg(&input_buffer)
+            .arg(&output_buffer)
+            .global_work_size(input.len())
+            .build()?;
+
+        let start = Instant::now();
+        unsafe {
+            kernel.enq()?;
+        }
+
+        let mut output = vec![0u8; output_buffer.len()];
+        output_buffer.read(&mut output).enq()?;
+        println!(
+            "GPU IO + Calculation took {} ms",
+            start.elapsed().as_secs_f64() * 1000f64
+        );
+        let primes = input
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| output[*index] == 1)
+            .map(|(_, v)| *v)
+            .collect::<Vec<u64>>();
+
+        Ok(primes)
+    }
+
+    /// Filters the primes from a list of numbers by using a precalculated list of primes to check
+    /// for divisibility
     pub fn filter_primes(&self, input: Vec<u64>) -> ocl::Result<Vec<u64>> {
         lazy_static::lazy_static! {static ref PRIME_CACHE: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));}
         if PRIME_CACHE.lock().len() == 0 {
@@ -128,36 +171,28 @@ impl KernelController {
 fn get_primes(max_number: u64) -> Vec<u64> {
     let start = Instant::now();
     let mut primes = Vec::with_capacity((max_number as f64).sqrt() as usize);
-    let mut num = 3;
+    let mut num = 1;
 
     while num < max_number {
         let mut is_prime = true;
 
-        if num == 2 {
+        if num == 2 || num == 3 {
             is_prime = true;
-        } else if num < 3 || num % 2 == 0 {
+        } else if num == 1 || num % 2 == 0 {
             is_prime = false;
         } else {
             let check_stop = (num as f64).sqrt().ceil() as u64;
-            let mut free_check_start = 9;
 
-            for prime in primes.iter().take_while(|num| **num < check_stop) {
-                let prime = *prime;
-                free_check_start = prime;
-                if num % prime == 0 {
-                    is_prime = false;
-                    break;
+            if check_stop <= 9 {
+                for i in (3..check_stop).step_by(2) {
+                    if num % i == 0 {
+                        is_prime = false;
+                    }
                 }
-            }
-            if free_check_start < check_stop && is_prime {
-                free_check_start -= free_check_start % 3;
-                if free_check_start % 2 == 0 {
-                    free_check_start -= 3;
-                }
-                for i in (max(free_check_start, 9)..check_stop).step_by(6) {
+            } else {
+                for i in (9..(check_stop + 6)).step_by(6) {
                     if num % (i - 2) == 0 || num % (i - 4) == 0 {
                         is_prime = false;
-                        break;
                     }
                 }
             }
@@ -170,21 +205,26 @@ fn get_primes(max_number: u64) -> Vec<u64> {
     println!(
         "Generated {} primes on the cpu in {} ms",
         primes.len(),
-        start.elapsed().as_secs_f64() * 1000f64
+        start.elapsed().as_secs_f64() * 1000f64,
     );
 
     primes
 }
 
 #[allow(dead_code)]
-fn is_prime(number: u64) -> bool {
-    if number < 3 || number % 2 == 0 {
+pub fn is_prime(number: u64) -> bool {
+    if number == 2 || number == 3 {
+        return true;
+    }
+    if number == 1 || number % 2 == 0 {
         return false;
     }
-    for i in (9..(number as f64).sqrt().ceil() as u64).step_by(6) {
-        if number % (i - 2) == 0 || number % (i - 4) == 0 {
+    let limit = (number as f64).sqrt().ceil() as u64;
+    for i in (3..limit).step_by(2) {
+        if number % i == 0 {
             return false;
         }
     }
+
     return true;
 }
