@@ -46,7 +46,12 @@ impl KernelController {
     }
 
     pub fn filter_primes(&self, input: Vec<u64>) -> ocl::Result<Vec<u64>> {
-        lazy_static::lazy_static! {static ref PRIME_CACHE: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(get_primes(2048)));}
+        lazy_static::lazy_static! {static ref PRIME_CACHE: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));}
+        if PRIME_CACHE.lock().len() == 0 {
+            PRIME_CACHE.lock().append(&mut get_primes(
+                (*input.iter().max().unwrap_or(&1024) as f64).sqrt().ceil() as u64,
+            ));
+        }
 
         let prime_buffer = self
             .pro_que
@@ -68,7 +73,7 @@ impl KernelController {
 
         let kernel = self
             .pro_que
-            .kernel_builder("check_prime")
+            .kernel_builder("check_prime_cached")
             .arg(prime_buffer.len() as u32)
             .arg(&prime_buffer)
             .arg(&input_buffer)
@@ -120,15 +125,17 @@ impl KernelController {
 }
 
 /// Returns a list of prime numbers that can be used to speed up the divisibility check
-fn get_primes(count: usize) -> Vec<u64> {
+fn get_primes(max_number: u64) -> Vec<u64> {
     let start = Instant::now();
-    let mut primes = Vec::with_capacity(count);
+    let mut primes = Vec::with_capacity((max_number as f64).sqrt() as usize);
     let mut num = 3;
 
-    while primes.len() < count {
+    while num < max_number {
         let mut is_prime = true;
 
-        if num < 3 || num % 2 == 0 {
+        if num == 2 {
+            is_prime = true;
+        } else if num < 3 || num % 2 == 0 {
             is_prime = false;
         } else {
             let check_stop = (num as f64).sqrt().ceil() as u64;
@@ -162,7 +169,7 @@ fn get_primes(count: usize) -> Vec<u64> {
     }
     println!(
         "Generated {} primes on the cpu in {} ms",
-        count,
+        primes.len(),
         start.elapsed().as_secs_f64() * 1000f64
     );
 

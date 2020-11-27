@@ -78,6 +78,7 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
     if offset % 2 == 0 {
         offset += 1;
     }
+    sender.send(vec![2]).unwrap();
     loop {
         let start = Instant::now();
         let numbers = (offset..(prime_opts.numbers_per_step as u64 * 2 + offset))
