@@ -10,7 +10,7 @@ use ocl::ProQue;
 use parking_lot::Mutex;
 use std::mem::size_of;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub struct KernelController {
     pro_que: ProQue,
@@ -46,7 +46,7 @@ impl KernelController {
 
     /// Filters all primes from the input without using a precalculated list of primes
     /// for divisibility checks
-    pub fn filter_primes_simple(&self, input: Vec<u64>) -> ocl::Result<Vec<u64>> {
+    pub fn filter_primes_simple(&self, input: Vec<u64>) -> ocl::Result<PrimeCalculationResult> {
         let input_buffer = self.pro_que.buffer_builder().len(input.len()).build()?;
         input_buffer.write(&input[..]).enq()?;
 
@@ -72,10 +72,13 @@ impl KernelController {
 
         let mut output = vec![0u8; output_buffer.len()];
         output_buffer.read(&mut output).enq()?;
+        let gpu_calc_duration = start.elapsed();
         println!(
             "GPU IO + Calculation took {} ms",
-            start.elapsed().as_secs_f64() * 1000f64
+            gpu_calc_duration.as_secs_f64() * 1000f64
         );
+
+        let filter_start = Instant::now();
         let primes = input
             .iter()
             .enumerate()
@@ -83,12 +86,16 @@ impl KernelController {
             .map(|(_, v)| *v)
             .collect::<Vec<u64>>();
 
-        Ok(primes)
+        Ok(PrimeCalculationResult {
+            primes,
+            filter_duration: filter_start.elapsed(),
+            gpu_duration: gpu_calc_duration,
+        })
     }
 
     /// Filters the primes from a list of numbers by using a precalculated list of primes to check
     /// for divisibility
-    pub fn filter_primes(&self, input: Vec<u64>) -> ocl::Result<Vec<u64>> {
+    pub fn filter_primes(&self, input: Vec<u64>) -> ocl::Result<PrimeCalculationResult> {
         lazy_static::lazy_static! {static ref PRIME_CACHE: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));}
         if PRIME_CACHE.lock().len() == 0 {
             PRIME_CACHE.lock().append(&mut get_primes(
@@ -132,22 +139,23 @@ impl KernelController {
         let mut output = vec![0u8; output_buffer.len()];
         output_buffer.read(&mut output).enq()?;
 
-        let mut input_o = vec![0u64; input_buffer.len()];
-        input_buffer.read(&mut input_o).enq()?;
+        let gpu_calc_duration = start.elapsed();
 
         println!(
             "GPU IO + Calculation took {} ms",
-            start.elapsed().as_secs_f64() * 1000f64
+            gpu_calc_duration.as_secs_f64() * 1000f64
         );
 
+        let prime_filter_start = Instant::now();
         let primes = input
             .iter()
             .enumerate()
             .filter(|(index, _)| output[*index] == 1)
             .map(|(_, v)| *v)
             .collect::<Vec<u64>>();
+        let filter_duration = prime_filter_start.elapsed();
 
-        let start = Instant::now();
+        let prime_calc_start = Instant::now();
         let mut prime_cache = PRIME_CACHE.lock();
 
         if (prime_cache.len() + primes.len()) * size_of::<i64>()
@@ -157,13 +165,18 @@ impl KernelController {
             prime_cache.sort();
             prime_cache.dedup();
         }
+        let cache_duration = prime_calc_start.elapsed();
         println!(
             "Prime caching took: {} ms, size: {}",
-            start.elapsed().as_secs_f64() * 1000f64,
+            cache_duration.as_secs_f64() * 1000f64,
             prime_cache.len(),
         );
 
-        Ok(primes)
+        Ok(PrimeCalculationResult {
+            primes,
+            gpu_duration: gpu_calc_duration,
+            filter_duration,
+        })
     }
 }
 
@@ -227,4 +240,10 @@ pub fn is_prime(number: u64) -> bool {
     }
 
     return true;
+}
+
+pub struct PrimeCalculationResult {
+    pub primes: Vec<u64>,
+    pub gpu_duration: Duration,
+    pub filter_duration: Duration,
 }

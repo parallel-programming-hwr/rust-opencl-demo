@@ -20,6 +20,7 @@ mod kernel_controller;
 #[derive(StructOpt, Clone, Debug)]
 #[structopt()]
 enum Opts {
+    /// Calculates primes on the GPU
     #[structopt(name = "calculate-primes")]
     CalculatePrimes(CalculatePrimes),
 }
@@ -34,18 +35,25 @@ struct CalculatePrimes {
     #[structopt(long = "end", default_value = "9223372036854775807")]
     max_number: u64,
 
+    /// The output file for the calculated prime numbers
     #[structopt(short = "o", long = "output", default_value = "primes.txt")]
     output_file: PathBuf,
 
+    /// The output file for timings
     #[structopt(long = "timings-output", default_value = "timings.csv")]
     timings_file: PathBuf,
 
+    /// The amount of numbers that are checked per step. Even numbers are ignored so the
+    /// Range actually goes to numbers_per_step * 2.
     #[structopt(long = "numbers-per-step", default_value = "33554432")]
     numbers_per_step: usize,
 
+    /// If the prime numbers should be used for the divisibility check instead of using
+    /// an optimized auto-increment loop.
     #[structopt(long = "no-cache")]
     no_cache: bool,
 
+    /// If the calculated prime numbers should be validated on the cpu by a simple prime algorithm
     #[structopt(long = "cpu-validate")]
     cpu_validate: bool,
 }
@@ -77,7 +85,7 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             .unwrap(),
     );
     timings
-        .write_all("offset,count,duration\n".as_bytes())
+        .write_all("offset,count,gpu_duration,filter_duration,duration\n".as_bytes())
         .unwrap();
     let (sender, handle) = create_write_thread(output);
 
@@ -98,11 +106,12 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             numbers.len(),
             offset
         );
-        let primes = if prime_opts.no_cache {
+        let prime_result = if prime_opts.no_cache {
             controller.filter_primes_simple(numbers)?
         } else {
             controller.filter_primes(numbers)?
         };
+        let primes = prime_result.primes;
         let elapsed_ms = start.elapsed().as_secs_f64() * 1000f64;
 
         println!(
@@ -112,25 +121,22 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             prime_opts.numbers_per_step as f64 / start.elapsed().as_secs_f64()
         );
         timings
-            .write_all(format!("{},{},{}\n", offset, primes.len(), elapsed_ms).as_bytes())
+            .write_all(
+                format!(
+                    "{},{},{},{},{}\n",
+                    offset,
+                    primes.len(),
+                    prime_result.gpu_duration.as_secs_f64() * 1000f64,
+                    prime_result.filter_duration.as_secs_f64() * 1000f64,
+                    elapsed_ms
+                )
+                .as_bytes(),
+            )
             .unwrap();
         timings.flush().unwrap();
 
         if prime_opts.cpu_validate {
-            println!("Validating...");
-            let failures = primes
-                .par_iter()
-                .filter(|n| !is_prime(**n))
-                .collect::<Vec<&u64>>();
-            if failures.len() > 0 {
-                println!(
-                    "{} failures in prime calculation: {:?}",
-                    failures.len(),
-                    failures
-                );
-            } else {
-                println!("No failures found.");
-            }
+            validate_primes_on_cpu(&primes)
         }
         println!();
         sender.send(primes).unwrap();
@@ -147,6 +153,23 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
     handle.join().unwrap();
 
     Ok(())
+}
+
+fn validate_primes_on_cpu(primes: &Vec<u64>) {
+    println!("Validating...");
+    let failures = primes
+        .par_iter()
+        .filter(|n| !is_prime(**n))
+        .collect::<Vec<&u64>>();
+    if failures.len() > 0 {
+        println!(
+            "{} failures in prime calculation: {:?}",
+            failures.len(),
+            failures
+        );
+    } else {
+        println!("No failures found.");
+    }
 }
 
 fn create_write_thread(mut writer: BufWriter<File>) -> (Sender<Vec<u64>>, JoinHandle<()>) {
