@@ -4,7 +4,8 @@
  * See LICENSE for more information
  */
 
-use crate::kernel_controller::{is_prime, KernelController};
+use crate::kernel_controller::primes::is_prime;
+use crate::kernel_controller::KernelController;
 use rayon::prelude::*;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
