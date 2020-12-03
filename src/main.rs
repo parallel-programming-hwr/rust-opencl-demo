@@ -6,17 +6,18 @@
 
 use crate::kernel_controller::primes::is_prime;
 use crate::kernel_controller::KernelController;
+use crate::output::csv::CSVWriter;
+use crate::output::{create_csv_write_thread, create_prime_write_thread};
 use rayon::prelude::*;
-use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::fs::OpenOptions;
+use std::io::BufWriter;
 use std::mem;
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Sender};
-use std::thread::{self, JoinHandle};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use structopt::StructOpt;
 
 mod kernel_controller;
+mod output;
 
 #[derive(StructOpt, Clone, Debug)]
 #[structopt()]
@@ -77,7 +78,7 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             .open(prime_opts.output_file)
             .unwrap(),
     );
-    let mut timings = BufWriter::new(
+    let timings = BufWriter::new(
         OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -85,17 +86,26 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             .open(prime_opts.timings_file)
             .unwrap(),
     );
-    timings
-        .write_all("offset,count,gpu_duration,filter_duration,duration\n".as_bytes())
-        .unwrap();
-    let (sender, handle) = create_write_thread(output);
+    let timings = CSVWriter::new(
+        timings,
+        &[
+            "offset",
+            "count",
+            "gpu_duration",
+            "filter_duration",
+            "total_duration",
+        ],
+    );
+
+    let (prime_sender, prime_handle) = create_prime_write_thread(output);
+    let (csv_sender, csv_handle) = create_csv_write_thread(timings);
 
     let mut offset = prime_opts.start_offset;
     if offset % 2 == 0 {
         offset += 1;
     }
     if offset < 2 {
-        sender.send(vec![2]).unwrap();
+        prime_sender.send(vec![2]).unwrap();
     }
     loop {
         let start = Instant::now();
@@ -121,26 +131,21 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             elapsed_ms,
             prime_opts.numbers_per_step as f64 / start.elapsed().as_secs_f64()
         );
-        timings
-            .write_all(
-                format!(
-                    "{},{},{},{},{}\n",
-                    offset,
-                    primes.len(),
-                    prime_result.gpu_duration.as_secs_f64() * 1000f64,
-                    prime_result.filter_duration.as_secs_f64() * 1000f64,
-                    elapsed_ms
-                )
-                .as_bytes(),
-            )
+        csv_sender
+            .send(vec![
+                offset.to_string(),
+                primes.len().to_string(),
+                duration_to_ms_string(&prime_result.gpu_duration),
+                duration_to_ms_string(&prime_result.filter_duration),
+                elapsed_ms.to_string(),
+            ])
             .unwrap();
-        timings.flush().unwrap();
 
         if prime_opts.cpu_validate {
             validate_primes_on_cpu(&primes)
         }
         println!();
-        sender.send(primes).unwrap();
+        prime_sender.send(primes).unwrap();
 
         if (prime_opts.numbers_per_step as u128 * 2 + offset as u128)
             > prime_opts.max_number as u128
@@ -150,8 +155,9 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
         offset += prime_opts.numbers_per_step as u64 * 2;
     }
 
-    mem::drop(sender);
-    handle.join().unwrap();
+    mem::drop(prime_sender);
+    prime_handle.join().unwrap();
+    csv_handle.join().unwrap();
 
     Ok(())
 }
@@ -173,16 +179,6 @@ fn validate_primes_on_cpu(primes: &Vec<u64>) {
     }
 }
 
-fn create_write_thread(mut writer: BufWriter<File>) -> (Sender<Vec<u64>>, JoinHandle<()>) {
-    let (tx, rx) = channel();
-    let handle = thread::spawn(move || {
-        for primes in rx {
-            for prime in primes {
-                writer.write_all(format!("{}\n", prime).as_bytes()).unwrap();
-            }
-            writer.flush().unwrap();
-        }
-    });
-
-    (tx, handle)
+fn duration_to_ms_string(duration: &Duration) -> String {
+    format!("{}", duration.as_secs_f64() * 1000f64)
 }

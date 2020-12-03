@@ -8,6 +8,7 @@ use ocl::core::DeviceInfo;
 use ocl::enums::DeviceInfoResult;
 use ocl::ProQue;
 
+pub mod bench;
 pub mod primes;
 
 pub struct KernelController {
@@ -30,6 +31,14 @@ impl KernelController {
         println!(
             "Max Mem Alloc: {} bytes",
             device.info(DeviceInfo::MaxMemAllocSize)?
+        );
+        println!(
+            "Max Compute Units: {}",
+            device.info(DeviceInfo::MaxComputeUnits)?
+        );
+        println!(
+            "Max Work Group Size: {}",
+            device.info(DeviceInfo::MaxWorkGroupSize)?
         );
         println!();
         Ok(Self { pro_que })

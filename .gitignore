@@ -2,3 +2,5 @@
 .idea
 primes.txt
 timings.csv
+*.csv
+*.~lock*

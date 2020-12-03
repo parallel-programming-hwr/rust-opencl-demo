@@ -59,3 +59,12 @@ __kernel void check_prime(__global const ulong *IN, __global bool *OUT) {
 
     OUT[id] = true;
 }
+
+__kernel void bench_int(const uint limit, __global int *NUMBERS) {
+    uint id = get_global_id(0);
+    int num = NUMBERS[id];
+    for (int i = 0; i < limit; i++) {
+        num += i;
+    }
+    NUMBERS[id] = num;
+}
