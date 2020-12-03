@@ -29,6 +29,9 @@ enum Opts {
     /// Benchmarks the number of tasks used for the calculations
     #[structopt(name = "bench-task-count")]
     BenchmarkTaskCount(BenchmarkTaskCount),
+
+    /// Prints GPU information
+    Info,
 }
 
 #[derive(StructOpt, Clone, Debug)]
@@ -97,6 +100,7 @@ fn main() -> ocl::Result<()> {
     let controller = KernelController::new()?;
 
     match opts {
+        Opts::Info => controller.print_info(),
         Opts::CalculatePrimes(prime_opts) => calculate_primes(prime_opts, controller),
         Opts::BenchmarkTaskCount(bench_opts) => bench_task_count(bench_opts, controller),
     }

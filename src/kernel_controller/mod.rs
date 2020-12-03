@@ -21,27 +21,37 @@ impl KernelController {
             .src(include_str!("kernel.cl"))
             .dims(1 << 20)
             .build()?;
-        let device = pro_que.device();
-        println!("Using device {}", device.name()?);
-        println!("Vendor: {}", device.vendor()?);
-        println!(
-            "Global Mem Size: {} bytes",
-            device.info(DeviceInfo::GlobalMemSize)?
-        );
-        println!(
-            "Max Mem Alloc: {} bytes",
-            device.info(DeviceInfo::MaxMemAllocSize)?
-        );
-        println!(
-            "Max Compute Units: {}",
-            device.info(DeviceInfo::MaxComputeUnits)?
-        );
-        println!(
-            "Max Work Group Size: {}",
-            device.info(DeviceInfo::MaxWorkGroupSize)?
-        );
-        println!();
+        println!("Using device {}", pro_que.device().name()?);
+
         Ok(Self { pro_que })
+    }
+
+    pub fn print_info(&self) -> ocl::Result<()> {
+        let device = self.pro_que.device();
+        let info_keys = vec![
+            DeviceInfo::Type,
+            DeviceInfo::Vendor,
+            DeviceInfo::DriverVersion,
+            DeviceInfo::ExecutionCapabilities,
+            DeviceInfo::MaxComputeUnits,
+            DeviceInfo::MaxWorkGroupSize,
+            DeviceInfo::MaxClockFrequency,
+            DeviceInfo::GlobalMemSize,
+            DeviceInfo::LocalMemSize,
+            DeviceInfo::MaxMemAllocSize,
+            DeviceInfo::LocalMemType,
+            DeviceInfo::GlobalMemCacheType,
+            DeviceInfo::GlobalMemCacheSize,
+            DeviceInfo::OpenclCVersion,
+            DeviceInfo::Platform,
+        ];
+
+        for info in info_keys {
+            println!("{:?}: {}", info, device.info(info)?)
+        }
+        println!();
+
+        Ok(())
     }
 
     fn available_memory(&self) -> ocl::Result<u64> {
