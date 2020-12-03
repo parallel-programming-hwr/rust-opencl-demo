@@ -5,6 +5,7 @@
  */
 
 use crate::kernel_controller::KernelController;
+use std::fmt::{self, Display, Formatter};
 use std::time::{Duration, Instant};
 
 pub struct BenchStatistics {
@@ -13,6 +14,28 @@ pub struct BenchStatistics {
     pub write_duration: Duration,
     pub calc_duration: Duration,
     pub read_duration: Duration,
+}
+
+impl Display for BenchStatistics {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Calculation Count: {}\nTask Count: {}\nWrite Duration: {} ms\nGPU Duration: {} ms\nRead Duration: {} ms",
+            self.calc_count,
+            self.num_tasks,
+            self.write_duration.as_secs_f64() * 1000f64,
+            self.calc_duration.as_secs_f64() * 1000f64,
+            self.read_duration.as_secs_f64() * 1000f64
+        )
+    }
+}
+
+impl BenchStatistics {
+    pub fn avg(&mut self, other: Self) {
+        self.read_duration = (self.read_duration + other.read_duration) / 2;
+        self.write_duration = (self.write_duration + other.write_duration) / 2;
+        self.calc_duration = (self.calc_duration + other.calc_duration) / 2;
+    }
 }
 
 impl KernelController {
@@ -32,6 +55,7 @@ impl KernelController {
             .kernel_builder("bench_int")
             .arg(calc_count)
             .arg(&input_buffer)
+            .global_work_size(num_tasks)
             .build()?;
         let calc_start = Instant::now();
         unsafe {

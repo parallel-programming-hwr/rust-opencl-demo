@@ -4,7 +4,6 @@
  * See LICENSE for more information
  */
 use crate::output::csv::CSVWriter;
-use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::sync::mpsc::{channel, Sender};

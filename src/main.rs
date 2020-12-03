@@ -25,6 +25,10 @@ enum Opts {
     /// Calculates primes on the GPU
     #[structopt(name = "calculate-primes")]
     CalculatePrimes(CalculatePrimes),
+
+    /// Benchmarks the number of tasks used for the calculations
+    #[structopt(name = "bench-task-count")]
+    BenchmarkTaskCount(BenchmarkTaskCount),
 }
 
 #[derive(StructOpt, Clone, Debug)]
@@ -60,12 +64,41 @@ struct CalculatePrimes {
     cpu_validate: bool,
 }
 
+#[derive(StructOpt, Clone, Debug)]
+struct BenchmarkTaskCount {
+    /// How many calculations steps should be done per GPU thread
+    #[structopt(long = "calculation-steps", default_value = "1000000")]
+    calculation_steps: u32,
+
+    /// The initial number of tasks for the benchmark
+    #[structopt(long = "num-tasks-start", default_value = "1")]
+    num_tasks_start: usize,
+
+    /// The maximum number of tasks for the benchmark
+    #[structopt(long = "num-tasks-stop", default_value = "10000000")]
+    num_tasks_stop: usize,
+
+    /// The amount the task number increases per step
+    #[structopt(long = "num-tasks-step", default_value = "10")]
+    num_tasks_step: usize,
+
+    /// The average of n runs that is used instead of using one value only.
+    /// By default the benchmark for each step is only run once
+    #[structopt(long = "average-of", default_value = "1")]
+    average_of: usize,
+
+    /// The output file for timings
+    #[structopt(long = "bench-output", default_value = "bench.csv")]
+    benchmark_file: PathBuf,
+}
+
 fn main() -> ocl::Result<()> {
     let opts: Opts = Opts::from_args();
     let controller = KernelController::new()?;
 
     match opts {
         Opts::CalculatePrimes(prime_opts) => calculate_primes(prime_opts, controller),
+        Opts::BenchmarkTaskCount(bench_opts) => bench_task_count(bench_opts, controller),
     }
 }
 
@@ -95,7 +128,8 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             "filter_duration",
             "total_duration",
         ],
-    );
+    )
+    .unwrap();
 
     let (prime_sender, prime_handle) = create_prime_write_thread(output);
     let (csv_sender, csv_handle) = create_csv_write_thread(timings);
@@ -156,8 +190,54 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
     }
 
     mem::drop(prime_sender);
+    mem::drop(csv_sender);
     prime_handle.join().unwrap();
     csv_handle.join().unwrap();
+
+    Ok(())
+}
+
+fn bench_task_count(opts: BenchmarkTaskCount, controller: KernelController) -> ocl::Result<()> {
+    let bench_writer = BufWriter::new(
+        OpenOptions::new()
+            .truncate(true)
+            .write(true)
+            .create(true)
+            .open(opts.benchmark_file)
+            .unwrap(),
+    );
+    let csv_writer = CSVWriter::new(
+        bench_writer,
+        &[
+            "num_tasks",
+            "calc_count",
+            "write_duration",
+            "gpu_duration",
+            "read_duration",
+        ],
+    )
+    .unwrap();
+    let (bench_sender, bench_handle) = create_csv_write_thread(csv_writer);
+    for n in (opts.num_tasks_start..opts.num_tasks_stop).step_by(opts.num_tasks_step) {
+        let mut stats = controller.bench_int(opts.calculation_steps, n)?;
+        for _ in 1..opts.average_of {
+            stats.avg(controller.bench_int(opts.calculation_steps, n)?)
+        }
+
+        println!("{}\n", stats);
+        bench_sender
+            .send(vec![
+                n.to_string(),
+                opts.calculation_steps.to_string(),
+                duration_to_ms_string(&stats.write_duration),
+                duration_to_ms_string(&stats.calc_duration),
+                duration_to_ms_string(&stats.read_duration),
+            ])
+            .unwrap();
+    }
+
+    mem::drop(bench_sender);
+    bench_handle.join().unwrap();
 
     Ok(())
 }

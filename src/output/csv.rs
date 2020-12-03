@@ -17,11 +17,19 @@ where
     W: Write,
 {
     /// Creates a new CSVWriter with a defined list of columns
-    pub fn new(writer: W, columns: &[&str]) -> Self {
-        Self {
+    pub fn new(writer: W, columns: &[&str]) -> Result<Self> {
+        let column_vec = columns
+            .iter()
+            .map(|column| column.to_string())
+            .collect::<Vec<String>>();
+
+        let mut csv_writer = Self {
             inner: writer,
-            columns: columns.iter().map(|column| column.to_string()).collect(),
-        }
+            columns: column_vec.clone(),
+        };
+        csv_writer.add_row(column_vec)?;
+
+        Ok(csv_writer)
     }
 
     /// Adds a new row of values to the file
@@ -30,6 +38,7 @@ where
             items
                 .iter()
                 .fold("".to_string(), |a, b| format!("{},{}", a, b))
+                .trim_start_matches(',')
                 .as_bytes(),
         )?;
         self.inner.write_all("\n".as_bytes())
