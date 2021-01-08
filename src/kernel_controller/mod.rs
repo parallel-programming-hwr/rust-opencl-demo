@@ -11,6 +11,7 @@ use ocl::ProQue;
 pub mod bench;
 pub mod primes;
 
+#[derive(Clone)]
 pub struct KernelController {
     pro_que: ProQue,
 }

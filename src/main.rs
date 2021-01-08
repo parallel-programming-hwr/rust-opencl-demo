@@ -4,6 +4,7 @@
  * See LICENSE for more information
  */
 
+use crate::concurrency::executor::ConcurrentKernelExecutor;
 use crate::kernel_controller::primes::is_prime;
 use crate::kernel_controller::KernelController;
 use crate::output::csv::CSVWriter;
@@ -13,9 +14,11 @@ use std::fs::OpenOptions;
 use std::io::BufWriter;
 use std::mem;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::sync::mpsc::channel;
+use std::time::Duration;
 use structopt::StructOpt;
 
+mod concurrency;
 mod kernel_controller;
 mod output;
 
@@ -65,6 +68,9 @@ struct CalculatePrimes {
     /// If the calculated prime numbers should be validated on the cpu by a simple prime algorithm
     #[structopt(long = "cpu-validate")]
     cpu_validate: bool,
+
+    #[structopt(short = "p", long = "parallel", default_value = "2")]
+    num_threads: usize,
 }
 
 #[derive(StructOpt, Clone, Debug)]
@@ -112,7 +118,7 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
         OpenOptions::new()
             .create(true)
             .append(true)
-            .open(prime_opts.output_file)
+            .open(&prime_opts.output_file)
             .unwrap(),
     );
     let timings = BufWriter::new(
@@ -120,18 +126,12 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             .create(true)
             .truncate(true)
             .write(true)
-            .open(prime_opts.timings_file)
+            .open(&prime_opts.timings_file)
             .unwrap(),
     );
     let timings = CSVWriter::new(
         timings,
-        &[
-            "offset",
-            "count",
-            "gpu_duration",
-            "filter_duration",
-            "total_duration",
-        ],
+        &["offset", "count", "gpu_duration", "filter_duration"],
     )
     .unwrap();
 
@@ -145,29 +145,30 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
     if offset < 2 {
         prime_sender.send(vec![2]).unwrap();
     }
-    loop {
-        let start = Instant::now();
-        let numbers = (offset..(prime_opts.numbers_per_step as u64 * 2 + offset))
-            .step_by(2)
-            .collect::<Vec<u64>>();
-        println!(
-            "Filtering primes from {} numbers, offset: {}",
-            numbers.len(),
-            offset
-        );
-        let prime_result = if prime_opts.no_cache {
-            controller.filter_primes_simple(numbers)?
-        } else {
-            controller.filter_primes(numbers)?
-        };
-        let primes = prime_result.primes;
-        let elapsed_ms = start.elapsed().as_secs_f64() * 1000f64;
+    let executor = ConcurrentKernelExecutor::new(controller);
+    let (tx, rx) = channel();
 
+    let executor_thread = std::thread::spawn({
+        let prime_opts = prime_opts.clone();
+        move || {
+            executor.calculate_primes(
+                prime_opts.start_offset,
+                prime_opts.numbers_per_step,
+                prime_opts.max_number,
+                prime_opts.no_cache,
+                prime_opts.num_threads,
+                tx,
+            )
+        }
+    });
+    for prime_result in rx {
+        let offset = prime_result.primes.last().cloned().unwrap();
+        let primes = prime_result.primes;
         println!(
-            "Calculated {} primes in {:.4} ms: {:.4} checks/s",
+            "Calculated {} primes: {:.4} checks/s, offset: {}",
             primes.len(),
-            elapsed_ms,
-            prime_opts.numbers_per_step as f64 / start.elapsed().as_secs_f64()
+            prime_opts.numbers_per_step as f64 / prime_result.gpu_duration.as_secs_f64(),
+            offset,
         );
         csv_sender
             .send(vec![
@@ -175,28 +176,19 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
                 primes.len().to_string(),
                 duration_to_ms_string(&prime_result.gpu_duration),
                 duration_to_ms_string(&prime_result.filter_duration),
-                elapsed_ms.to_string(),
             ])
             .unwrap();
-
         if prime_opts.cpu_validate {
             validate_primes_on_cpu(&primes)
         }
-        println!();
         prime_sender.send(primes).unwrap();
-
-        if (prime_opts.numbers_per_step as u128 * 2 + offset as u128)
-            > prime_opts.max_number as u128
-        {
-            break;
-        }
-        offset += prime_opts.numbers_per_step as u64 * 2;
     }
 
     mem::drop(prime_sender);
     mem::drop(csv_sender);
     prime_handle.join().unwrap();
     csv_handle.join().unwrap();
+    executor_thread.join().unwrap();
 
     Ok(())
 }

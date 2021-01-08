@@ -73,13 +73,18 @@ impl KernelController {
             ));
         }
 
-        let prime_buffer = self
-            .pro_que
-            .buffer_builder()
-            .len(PRIME_CACHE.lock().len())
-            .build()?;
+        let prime_buffer = {
+            let prime_cache = PRIME_CACHE.lock();
+            let prime_buffer = self
+                .pro_que
+                .buffer_builder()
+                .len(prime_cache.len())
+                .build()?;
 
-        prime_buffer.write(&PRIME_CACHE.lock()[..]).enq()?;
+            prime_buffer.write(&prime_cache[..]).enq()?;
+
+            prime_buffer
+        };
 
         let input_buffer = self.pro_que.buffer_builder().len(input.len()).build()?;
         input_buffer.write(&input[..]).enq()?;
