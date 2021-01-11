@@ -5,6 +5,8 @@
  */
 
 use crate::kernel_controller::KernelController;
+use ocl::core::{get_event_profiling_info, wait_for_event, ProfilingInfo};
+use ocl::EventList;
 use parking_lot::Mutex;
 use std::mem::size_of;
 use std::sync::Arc;
@@ -19,7 +21,11 @@ pub struct PrimeCalculationResult {
 impl KernelController {
     /// Filters all primes from the input without using a precalculated list of primes
     /// for divisibility checks
-    pub fn filter_primes_simple(&self, input: Vec<u64>) -> ocl::Result<PrimeCalculationResult> {
+    pub fn filter_primes_simple(
+        &self,
+        input: Vec<u64>,
+        local_size: Option<usize>,
+    ) -> ocl::Result<PrimeCalculationResult> {
         let input_buffer = self.pro_que.buffer_builder().len(input.len()).build()?;
         input_buffer.write(&input[..]).enq()?;
 
@@ -30,27 +36,37 @@ impl KernelController {
             .fill_val(0u8)
             .build()?;
 
-        let kernel = self
-            .pro_que
-            .kernel_builder("check_prime")
+        let mut builder = self.pro_que.kernel_builder("check_prime");
+        if let Some(local_size) = local_size {
+            builder.local_work_size(local_size);
+        }
+        let kernel = builder
             .arg(&input_buffer)
             .arg(&output_buffer)
             .global_work_size(input.len())
             .build()?;
 
-        let start = Instant::now();
+        let start_cpu = Instant::now();
+        let event_start = self.pro_que.queue().enqueue_marker::<EventList>(None)?;
+
         unsafe {
             kernel.enq()?;
         }
+        let event_stop = self.pro_que.queue().enqueue_marker::<EventList>(None)?;
 
-        self.pro_que.finish()?;
-        let gpu_calc_duration = start.elapsed();
+        wait_for_event(&event_start)?;
+        wait_for_event(&event_stop)?;
+
+        let start = get_event_profiling_info(&event_start, ProfilingInfo::End)?;
+        let stop = get_event_profiling_info(&event_stop, ProfilingInfo::Start)?;
+        let gpu_calc_duration = Duration::from_nanos(stop.time()? - start.time()?);
 
         let mut output = vec![0u8; output_buffer.len()];
         output_buffer.read(&mut output).enq()?;
         println!(
-            "GPU IO + Calculation took {} ms",
-            gpu_calc_duration.as_secs_f64() * 1000f64
+            "GPU Calculation: {} ms\nGPU IO + Calculation: {} ms",
+            gpu_calc_duration.as_secs_f64() * 1000f64,
+            start_cpu.elapsed().as_secs_f64() * 1000f64
         );
 
         let filter_start = Instant::now();
@@ -65,7 +81,11 @@ impl KernelController {
 
     /// Filters the primes from a list of numbers by using a precalculated list of primes to check
     /// for divisibility
-    pub fn filter_primes(&self, input: Vec<u64>) -> ocl::Result<PrimeCalculationResult> {
+    pub fn filter_primes(
+        &self,
+        input: Vec<u64>,
+        local_size: Option<usize>,
+    ) -> ocl::Result<PrimeCalculationResult> {
         lazy_static::lazy_static! {static ref PRIME_CACHE: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));}
         if PRIME_CACHE.lock().len() == 0 {
             PRIME_CACHE.lock().append(&mut get_primes(
@@ -96,30 +116,41 @@ impl KernelController {
             .fill_val(0u8)
             .build()?;
 
-        let kernel = self
-            .pro_que
-            .kernel_builder("check_prime_cached")
+        let mut builder = self.pro_que.kernel_builder("check_prime_cached");
+        if let Some(local_size) = local_size {
+            builder.local_work_size(local_size);
+        }
+        let kernel = builder
             .arg(prime_buffer.len() as u32)
             .arg(&prime_buffer)
             .arg(&input_buffer)
             .arg(&output_buffer)
+            .local_work_size(2)
             .global_work_size(input.len())
             .build()?;
 
-        let start = Instant::now();
+        let event_start = self.pro_que.queue().enqueue_marker::<EventList>(None)?;
+        let start_cpu = Instant::now();
+
         unsafe {
             kernel.enq()?;
         }
+        let event_stop = self.pro_que.queue().enqueue_marker::<EventList>(None)?;
 
-        self.pro_que.finish()?;
-        let gpu_calc_duration = start.elapsed();
+        wait_for_event(&event_start)?;
+        wait_for_event(&event_stop)?;
+
+        let start = get_event_profiling_info(&event_start, ProfilingInfo::End)?;
+        let stop = get_event_profiling_info(&event_stop, ProfilingInfo::Start)?;
+        let gpu_calc_duration = Duration::from_nanos(stop.time()? - start.time()?);
 
         let mut output = vec![0u8; output_buffer.len()];
         output_buffer.read(&mut output).enq()?;
 
         println!(
-            "GPU IO + Calculation took {} ms",
-            gpu_calc_duration.as_secs_f64() * 1000f64
+            "GPU Calculation: {} ms\nGPU IO + Calculation: {} ms",
+            gpu_calc_duration.as_secs_f64() * 1000f64,
+            start_cpu.elapsed().as_secs_f64() * 1000f64
         );
 
         let prime_filter_start = Instant::now();

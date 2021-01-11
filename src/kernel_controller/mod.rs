@@ -6,7 +6,7 @@
 
 use ocl::core::DeviceInfo;
 use ocl::enums::DeviceInfoResult;
-use ocl::ProQue;
+use ocl::{CommandQueueProperties, ProQue};
 
 pub mod bench;
 pub mod primes;
@@ -21,12 +21,14 @@ impl KernelController {
         let pro_que = ProQue::builder()
             .src(include_str!("kernel.cl"))
             .dims(1 << 20)
+            .queue_properties(CommandQueueProperties::PROFILING_ENABLE)
             .build()?;
         println!("Using device {}", pro_que.device().name()?);
 
         Ok(Self { pro_que })
     }
 
+    /// Prints information about the gpu capabilities
     pub fn print_info(&self) -> ocl::Result<()> {
         let device = self.pro_que.device();
         let info_keys = vec![

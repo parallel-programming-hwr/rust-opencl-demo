@@ -55,6 +55,13 @@ struct CalculatePrimes {
     #[structopt(long = "timings-output", default_value = "timings.csv")]
     timings_file: PathBuf,
 
+    /// The local size for the tasks.
+    /// The value for numbers_per_step needs to be divisible by this number.
+    /// The maximum local size depends on the gpu capabilities.
+    /// If no value is provided, OpenCL chooses it automatically.
+    #[structopt(long = "local-size")]
+    local_size: Option<usize>,
+
     /// The amount of numbers that are checked per step. Even numbers are ignored so the
     /// Range actually goes to numbers_per_step * 2.
     #[structopt(long = "numbers-per-step", default_value = "33554432")]
@@ -82,6 +89,20 @@ struct BenchmarkTaskCount {
     /// The initial number of tasks for the benchmark
     #[structopt(long = "num-tasks-start", default_value = "1")]
     num_tasks_start: usize,
+
+    /// The initial number for the local size
+    #[structopt(long = "local-size-start")]
+    local_size_start: Option<usize>,
+
+    /// The amount the local size increases by every step
+    #[structopt(long = "local-size-step", default_value = "10")]
+    local_size_step: usize,
+
+    /// The maximum amount of the local size
+    /// Can't be greater than the maximum local size of the gpu
+    /// that can be retrieved with the info command
+    #[structopt(long = "local-size-stop")]
+    local_size_stop: Option<usize>,
 
     /// The maximum number of tasks for the benchmark
     #[structopt(long = "num-tasks-stop", default_value = "10000000")]
@@ -154,6 +175,7 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             executor.calculate_primes(
                 prime_opts.start_offset,
                 prime_opts.numbers_per_step,
+                prime_opts.local_size,
                 prime_opts.max_number,
                 prime_opts.no_cache,
                 prime_opts.num_threads,
@@ -205,6 +227,7 @@ fn bench_task_count(opts: BenchmarkTaskCount, controller: KernelController) -> o
     let csv_writer = CSVWriter::new(
         bench_writer,
         &[
+            "local_size",
             "num_tasks",
             "calc_count",
             "write_duration",
@@ -214,22 +237,45 @@ fn bench_task_count(opts: BenchmarkTaskCount, controller: KernelController) -> o
     )
     .unwrap();
     let (bench_sender, bench_handle) = create_csv_write_thread(csv_writer);
-    for n in (opts.num_tasks_start..opts.num_tasks_stop).step_by(opts.num_tasks_step) {
-        let mut stats = controller.bench_int(opts.calculation_steps, n)?;
-        for _ in 1..opts.average_of {
-            stats.avg(controller.bench_int(opts.calculation_steps, n)?)
+    for n in (opts.num_tasks_start..=opts.num_tasks_stop).step_by(opts.num_tasks_step) {
+        if let (Some(start), Some(stop)) = (opts.local_size_start, opts.local_size_stop) {
+            for l in (start..=stop)
+                .step_by(opts.local_size_step)
+                .filter(|v| n % v == 0)
+            {
+                let mut stats = controller.bench_int(opts.calculation_steps, n, Some(l))?;
+                for _ in 1..opts.average_of {
+                    stats.avg(controller.bench_int(opts.calculation_steps, n, Some(l))?)
+                }
+                println!("{}\n", stats);
+                bench_sender
+                    .send(vec![
+                        l.to_string(),
+                        n.to_string(),
+                        opts.calculation_steps.to_string(),
+                        duration_to_ms_string(&stats.write_duration),
+                        duration_to_ms_string(&stats.calc_duration),
+                        duration_to_ms_string(&stats.read_duration),
+                    ])
+                    .unwrap();
+            }
+        } else {
+            let mut stats = controller.bench_int(opts.calculation_steps, n, None)?;
+            for _ in 1..opts.average_of {
+                stats.avg(controller.bench_int(opts.calculation_steps, n, None)?)
+            }
+            println!("{}\n", stats);
+            bench_sender
+                .send(vec![
+                    "n/a".to_string(),
+                    n.to_string(),
+                    opts.calculation_steps.to_string(),
+                    duration_to_ms_string(&stats.write_duration),
+                    duration_to_ms_string(&stats.calc_duration),
+                    duration_to_ms_string(&stats.read_duration),
+                ])
+                .unwrap();
         }
-
-        println!("{}\n", stats);
-        bench_sender
-            .send(vec![
-                n.to_string(),
-                opts.calculation_steps.to_string(),
-                duration_to_ms_string(&stats.write_duration),
-                duration_to_ms_string(&stats.calc_duration),
-                duration_to_ms_string(&stats.read_duration),
-            ])
-            .unwrap();
     }
 
     mem::drop(bench_sender);

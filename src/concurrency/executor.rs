@@ -18,6 +18,7 @@ impl ConcurrentKernelExecutor {
         &self,
         mut offset: u64,
         numbers_per_step: usize,
+        local_size: Option<usize>,
         stop: u64,
         no_cache: bool,
         num_threads: usize,
@@ -35,6 +36,7 @@ impl ConcurrentKernelExecutor {
             let controller = self.kernel_controller.clone();
             let offset = Arc::clone(&offset);
             let panic = Arc::clone(&panic);
+            let local_size = local_size.clone();
 
             handles.push(
                 ThreadBuilder::new()
@@ -54,7 +56,7 @@ impl ConcurrentKernelExecutor {
                             .collect::<Vec<u64>>();
                         let prime_result = if no_cache {
                             controller
-                                .filter_primes_simple(numbers)
+                                .filter_primes_simple(numbers, local_size.clone())
                                 .map_err(|e| {
                                     panic.store(true, Ordering::Relaxed);
                                     e
@@ -62,7 +64,7 @@ impl ConcurrentKernelExecutor {
                                 .unwrap()
                         } else {
                             controller
-                                .filter_primes(numbers)
+                                .filter_primes(numbers, local_size.clone())
                                 .map_err(|e| {
                                     panic.store(true, Ordering::Relaxed);
                                     e

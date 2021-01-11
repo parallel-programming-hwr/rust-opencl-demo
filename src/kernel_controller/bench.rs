@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 pub struct BenchStatistics {
     pub calc_count: u32,
     pub num_tasks: usize,
+    pub local_size: Option<usize>,
     pub write_duration: Duration,
     pub calc_duration: Duration,
     pub read_duration: Duration,
@@ -20,9 +21,10 @@ impl Display for BenchStatistics {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "Calculation Count: {}\nTask Count: {}\nWrite Duration: {} ms\nGPU Duration: {} ms\nRead Duration: {} ms",
+            "Calculation Count: {}\nTask Count: {}\nLocal Size: {}\nWrite Duration: {} ms\nGPU Duration: {} ms\nRead Duration: {} ms",
             self.calc_count,
             self.num_tasks,
+            self.local_size.map(|v|v.to_string()).unwrap_or("n/a".to_string()),
             self.write_duration.as_secs_f64() * 1000f64,
             self.calc_duration.as_secs_f64() * 1000f64,
             self.read_duration.as_secs_f64() * 1000f64
@@ -40,7 +42,12 @@ impl BenchStatistics {
 
 impl KernelController {
     /// Benches an integer
-    pub fn bench_int(&self, calc_count: u32, num_tasks: usize) -> ocl::Result<BenchStatistics> {
+    pub fn bench_int(
+        &self,
+        calc_count: u32,
+        num_tasks: usize,
+        local_size: Option<usize>,
+    ) -> ocl::Result<BenchStatistics> {
         let write_start = Instant::now();
         let input_buffer = self
             .pro_que
@@ -50,9 +57,13 @@ impl KernelController {
             .build()?;
         let write_duration = write_start.elapsed();
 
-        let kernel = self
-            .pro_que
-            .kernel_builder("bench_int")
+        let mut builder = self.pro_que.kernel_builder("bench_int");
+
+        if let Some(local_size) = local_size {
+            builder.local_work_size(local_size);
+        }
+
+        let kernel = builder
             .arg(calc_count)
             .arg(&input_buffer)
             .global_work_size(num_tasks)
@@ -71,6 +82,7 @@ impl KernelController {
         Ok(BenchStatistics {
             num_tasks,
             calc_count,
+            local_size,
             read_duration,
             calc_duration,
             write_duration,
