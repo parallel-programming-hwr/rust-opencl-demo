@@ -33,6 +33,11 @@ impl KernelController {
         Ok(Self { pro_que, executor })
     }
 
+    /// Sets the amount of executor threads that are used
+    pub fn set_concurrency(&mut self, concurrency: usize) {
+        self.executor.set_concurrency(concurrency)
+    }
+
     /// Prints information about the gpu capabilities
     pub fn print_info(&self) -> ocl::Result<()> {
         let device = self.pro_que.device();

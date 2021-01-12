@@ -183,7 +183,7 @@ impl KernelController {
 }
 
 /// Returns a list of prime numbers that can be used to speed up the divisibility check
-fn get_primes(max_number: u64) -> Vec<u64> {
+pub fn get_primes(max_number: u64) -> Vec<u64> {
     let start = Instant::now();
     let mut primes = Vec::with_capacity((max_number as f64).sqrt() as usize);
     let mut num = 1;

@@ -151,11 +151,14 @@ fn main() -> ocl::Result<()> {
 
 fn calculate_primes_streamed(
     prime_opts: CalculatePrimes,
-    controller: KernelController,
+    mut controller: KernelController,
 ) -> OCLStreamResult<()> {
+    controller.set_concurrency(prime_opts.num_threads);
+
     let csv_file = open_write_buffered(&prime_opts.timings_file);
     let mut csv_writer = ThreadedCSVWriter::new(csv_file, &["first", "count", "gpu_duration"]);
     let output_file = open_write_buffered(&prime_opts.output_file);
+
     let output_writer = ThreadedWriter::new(output_file, |v: Vec<u64>| {
         v.iter()
             .map(|v| v.to_string())
@@ -168,9 +171,13 @@ fn calculate_primes_streamed(
         prime_opts.max_number,
         prime_opts.numbers_per_step,
         prime_opts.local_size.unwrap_or(128),
+        !prime_opts.no_cache,
     );
     while let Ok(r) = stream.next() {
         let primes = r.value();
+        if prime_opts.cpu_validate {
+            validate_primes_on_cpu(primes);
+        }
         let first = *primes.first().unwrap(); // if there's none, rip
         println!(
             "Calculated {} primes in {:?}, offset: {}",
@@ -336,7 +343,7 @@ fn validate_primes_on_cpu(primes: &Vec<u64>) {
         .filter(|n| !is_prime(**n))
         .collect::<Vec<&u64>>();
     if failures.len() > 0 {
-        println!(
+        panic!(
             "{} failures in prime calculation: {:?}",
             failures.len(),
             failures
