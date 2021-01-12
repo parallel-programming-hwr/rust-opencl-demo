@@ -7,10 +7,13 @@
 use crate::concurrency::executor::ConcurrentKernelExecutor;
 use crate::kernel_controller::primes::is_prime;
 use crate::kernel_controller::KernelController;
-use crate::output::csv::CSVWriter;
-use crate::output::{create_csv_write_thread, create_prime_write_thread};
+use crate::output::create_prime_write_thread;
+use crate::output::csv::ThreadedCSVWriter;
+use crate::output::threaded::ThreadedWriter;
+
+use ocl_stream::utils::result::OCLStreamResult;
 use rayon::prelude::*;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::BufWriter;
 use std::mem;
 use std::path::PathBuf;
@@ -18,6 +21,7 @@ use std::sync::mpsc::channel;
 use std::time::Duration;
 use structopt::StructOpt;
 
+mod benching;
 mod concurrency;
 mod kernel_controller;
 mod output;
@@ -76,8 +80,13 @@ struct CalculatePrimes {
     #[structopt(long = "cpu-validate")]
     cpu_validate: bool,
 
+    /// number of used threads
     #[structopt(short = "p", long = "parallel", default_value = "2")]
     num_threads: usize,
+
+    /// if the result should be streamed
+    #[structopt(long = "streamed")]
+    streamed: bool,
 }
 
 #[derive(StructOpt, Clone, Debug)]
@@ -128,9 +137,58 @@ fn main() -> ocl::Result<()> {
 
     match opts {
         Opts::Info => controller.print_info(),
-        Opts::CalculatePrimes(prime_opts) => calculate_primes(prime_opts, controller),
+        Opts::CalculatePrimes(prime_opts) => {
+            if prime_opts.streamed {
+                calculate_primes_streamed(prime_opts, controller).unwrap();
+                Ok(())
+            } else {
+                calculate_primes(prime_opts, controller)
+            }
+        }
         Opts::BenchmarkTaskCount(bench_opts) => bench_task_count(bench_opts, controller),
     }
+}
+
+fn calculate_primes_streamed(
+    prime_opts: CalculatePrimes,
+    controller: KernelController,
+) -> OCLStreamResult<()> {
+    let csv_file = open_write_buffered(&prime_opts.timings_file);
+    let mut csv_writer = ThreadedCSVWriter::new(csv_file, &["first", "count", "gpu_duration"]);
+    let output_file = open_write_buffered(&prime_opts.output_file);
+    let output_writer = ThreadedWriter::new(output_file, |v: Vec<u64>| {
+        v.iter()
+            .map(|v| v.to_string())
+            .fold("".to_string(), |a, b| format!("{}\n{}", a, b))
+            .into_bytes()
+    });
+
+    let mut stream = controller.get_primes(
+        prime_opts.start_offset,
+        prime_opts.max_number,
+        prime_opts.numbers_per_step,
+        prime_opts.local_size.unwrap_or(128),
+    );
+    while let Ok(r) = stream.next() {
+        let primes = r.value();
+        let first = *primes.first().unwrap(); // if there's none, rip
+        println!(
+            "Calculated {} primes in {:?}, offset: {}",
+            primes.len(),
+            r.gpu_duration(),
+            first
+        );
+        csv_writer.add_row(vec![
+            first.to_string(),
+            primes.len().to_string(),
+            duration_to_ms_string(r.gpu_duration()),
+        ]);
+        output_writer.write(primes.clone());
+    }
+    csv_writer.close();
+    output_writer.close();
+
+    Ok(())
 }
 
 /// Calculates Prime numbers with GPU acceleration
@@ -150,14 +208,12 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             .open(&prime_opts.timings_file)
             .unwrap(),
     );
-    let timings = CSVWriter::new(
+    let mut csv_writer = ThreadedCSVWriter::new(
         timings,
         &["offset", "count", "gpu_duration", "filter_duration"],
-    )
-    .unwrap();
+    );
 
     let (prime_sender, prime_handle) = create_prime_write_thread(output);
-    let (csv_sender, csv_handle) = create_csv_write_thread(timings);
 
     let mut offset = prime_opts.start_offset;
     if offset % 2 == 0 {
@@ -192,14 +248,12 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
             prime_opts.numbers_per_step as f64 / prime_result.gpu_duration.as_secs_f64(),
             offset,
         );
-        csv_sender
-            .send(vec![
-                offset.to_string(),
-                primes.len().to_string(),
-                duration_to_ms_string(&prime_result.gpu_duration),
-                duration_to_ms_string(&prime_result.filter_duration),
-            ])
-            .unwrap();
+        csv_writer.add_row(vec![
+            offset.to_string(),
+            primes.len().to_string(),
+            duration_to_ms_string(&prime_result.gpu_duration),
+            duration_to_ms_string(&prime_result.filter_duration),
+        ]);
         if prime_opts.cpu_validate {
             validate_primes_on_cpu(&primes)
         }
@@ -207,9 +261,8 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
     }
 
     mem::drop(prime_sender);
-    mem::drop(csv_sender);
     prime_handle.join().unwrap();
-    csv_handle.join().unwrap();
+    csv_writer.close();
     executor_thread.join().unwrap();
 
     Ok(())
@@ -224,7 +277,7 @@ fn bench_task_count(opts: BenchmarkTaskCount, controller: KernelController) -> o
             .open(opts.benchmark_file)
             .unwrap(),
     );
-    let csv_writer = CSVWriter::new(
+    let mut csv_writer = ThreadedCSVWriter::new(
         bench_writer,
         &[
             "local_size",
@@ -234,9 +287,7 @@ fn bench_task_count(opts: BenchmarkTaskCount, controller: KernelController) -> o
             "gpu_duration",
             "read_duration",
         ],
-    )
-    .unwrap();
-    let (bench_sender, bench_handle) = create_csv_write_thread(csv_writer);
+    );
     for n in (opts.num_tasks_start..=opts.num_tasks_stop).step_by(opts.num_tasks_step) {
         if let (Some(start), Some(stop)) = (opts.local_size_start, opts.local_size_stop) {
             for l in (start..=stop)
@@ -248,16 +299,14 @@ fn bench_task_count(opts: BenchmarkTaskCount, controller: KernelController) -> o
                     stats.avg(controller.bench_int(opts.calculation_steps, n, Some(l))?)
                 }
                 println!("{}\n", stats);
-                bench_sender
-                    .send(vec![
-                        l.to_string(),
-                        n.to_string(),
-                        opts.calculation_steps.to_string(),
-                        duration_to_ms_string(&stats.write_duration),
-                        duration_to_ms_string(&stats.calc_duration),
-                        duration_to_ms_string(&stats.read_duration),
-                    ])
-                    .unwrap();
+                csv_writer.add_row(vec![
+                    l.to_string(),
+                    n.to_string(),
+                    opts.calculation_steps.to_string(),
+                    duration_to_ms_string(&stats.write_duration),
+                    duration_to_ms_string(&stats.calc_duration),
+                    duration_to_ms_string(&stats.read_duration),
+                ])
             }
         } else {
             let mut stats = controller.bench_int(opts.calculation_steps, n, None)?;
@@ -265,21 +314,17 @@ fn bench_task_count(opts: BenchmarkTaskCount, controller: KernelController) -> o
                 stats.avg(controller.bench_int(opts.calculation_steps, n, None)?)
             }
             println!("{}\n", stats);
-            bench_sender
-                .send(vec![
-                    "n/a".to_string(),
-                    n.to_string(),
-                    opts.calculation_steps.to_string(),
-                    duration_to_ms_string(&stats.write_duration),
-                    duration_to_ms_string(&stats.calc_duration),
-                    duration_to_ms_string(&stats.read_duration),
-                ])
-                .unwrap();
+            csv_writer.add_row(vec![
+                "n/a".to_string(),
+                n.to_string(),
+                opts.calculation_steps.to_string(),
+                duration_to_ms_string(&stats.write_duration),
+                duration_to_ms_string(&stats.calc_duration),
+                duration_to_ms_string(&stats.read_duration),
+            ]);
         }
     }
-
-    mem::drop(bench_sender);
-    bench_handle.join().unwrap();
+    csv_writer.close();
 
     Ok(())
 }
@@ -303,4 +348,17 @@ fn validate_primes_on_cpu(primes: &Vec<u64>) {
 
 fn duration_to_ms_string(duration: &Duration) -> String {
     format!("{}", duration.as_secs_f64() * 1000f64)
+}
+
+/// opens a file in a buffered writer
+/// if it already exists it will be recreated
+fn open_write_buffered(path: &PathBuf) -> BufWriter<File> {
+    BufWriter::new(
+        OpenOptions::new()
+            .truncate(true)
+            .write(true)
+            .create(true)
+            .open(path)
+            .expect("Failed to open file!"),
+    )
 }

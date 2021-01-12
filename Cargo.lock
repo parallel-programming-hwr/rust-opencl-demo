@@ -516,6 +516,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ocl-stream"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6571c0dc580e1603bdf23e277402b8dea73c0631de6a123b796da9a27681c960"
+dependencies = [
+ "crossbeam-channel 0.5.0",
+ "num_cpus",
+ "ocl",
+ "thiserror",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -665,8 +677,10 @@ checksum = "41cc0f7e4d5d4544e8861606a285bb08d3e70712ccc7d2b84d7c0ccfaf4b05ce"
 name = "rust-opencl-demo"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel 0.5.0",
  "lazy_static",
  "ocl",
+ "ocl-stream",
  "parking_lot",
  "rayon",
  "structopt",
@@ -771,6 +785,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d326610f408c7a4eb6f51c37c330e496b08506c9457c9d34287ecc38809fb060"
 dependencies = [
  "unicode-width",
+]
+
+[[package]]
+name = "thiserror"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76cc616c6abf8c8928e2fdcc0dbfab37175edd8fb49a4641066ad1364fdab146"
+dependencies = [
+ "thiserror-impl",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9be73a2caec27583d0046ef3796c3794f868a5bc813db689eed00c7631275cd1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

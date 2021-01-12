@@ -244,7 +244,7 @@ pub fn is_prime(number: u64) -> bool {
 }
 
 #[inline]
-fn map_gpu_prime_result(input: Vec<u64>, output: Vec<u8>) -> Vec<u64> {
+pub fn map_gpu_prime_result(input: Vec<u64>, output: Vec<u8>) -> Vec<u64> {
     input
         .into_iter()
         .enumerate()

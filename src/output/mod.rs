@@ -3,13 +3,13 @@
  * Copyright (C) 2020 trivernis
  * See LICENSE for more information
  */
-use crate::output::csv::CSVWriter;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::sync::mpsc::{channel, Sender};
 use std::thread::{self, JoinHandle};
 
 pub mod csv;
+pub mod threaded;
 
 pub fn create_prime_write_thread(
     mut writer: BufWriter<File>,
@@ -22,20 +22,6 @@ pub fn create_prime_write_thread(
             }
             writer.flush().unwrap();
         }
-    });
-
-    (tx, handle)
-}
-
-pub fn create_csv_write_thread(
-    mut writer: CSVWriter<BufWriter<File>>,
-) -> (Sender<Vec<String>>, JoinHandle<()>) {
-    let (tx, rx) = channel();
-    let handle = thread::spawn(move || {
-        for row in rx {
-            writer.add_row(row).unwrap();
-        }
-        writer.flush().unwrap();
     });
 
     (tx, handle)

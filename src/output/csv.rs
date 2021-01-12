@@ -4,49 +4,51 @@
  * See LICENSE for more information
  */
 
+use crate::output::threaded::ThreadedWriter;
 use std::collections::HashMap;
-use std::io::{Result, Write};
+use std::io::Write;
 
-pub struct CSVWriter<W: Write> {
-    inner: W,
+pub struct ThreadedCSVWriter {
+    inner: ThreadedWriter<String>,
     columns: Vec<String>,
 }
 
-impl<W> CSVWriter<W>
-where
-    W: Write,
-{
+impl ThreadedCSVWriter {
     /// Creates a new CSVWriter with a defined list of columns
-    pub fn new(writer: W, columns: &[&str]) -> Result<Self> {
+    pub fn new<W>(writer: W, columns: &[&str]) -> Self
+    where
+        W: Write + Send + Sync + 'static,
+    {
         let column_vec = columns
             .iter()
             .map(|column| column.to_string())
             .collect::<Vec<String>>();
 
+        let writer = ThreadedWriter::new(writer, |v: String| v.as_bytes().to_vec());
         let mut csv_writer = Self {
             inner: writer,
             columns: column_vec.clone(),
         };
-        csv_writer.add_row(column_vec)?;
+        csv_writer.add_row(column_vec);
 
-        Ok(csv_writer)
+        csv_writer
     }
 
     /// Adds a new row of values to the file
-    pub fn add_row(&mut self, items: Vec<String>) -> Result<()> {
-        self.inner.write_all(
+    pub fn add_row(&mut self, items: Vec<String>) {
+        self.inner.write(
             items
                 .iter()
                 .fold("".to_string(), |a, b| format!("{},{}", a, b))
                 .trim_start_matches(',')
-                .as_bytes(),
-        )?;
-        self.inner.write_all("\n".as_bytes())
+                .to_string()
+                + "\n",
+        );
     }
 
     /// Adds a new row of values stored in a map to the file
     #[allow(dead_code)]
-    pub fn add_row_map(&mut self, item_map: &HashMap<String, String>) -> Result<()> {
+    pub fn add_row_map(&mut self, item_map: &HashMap<String, String>) {
         let mut items = Vec::new();
         for key in &self.columns {
             items.push(item_map.get(key).cloned().unwrap_or("".to_string()));
@@ -55,7 +57,7 @@ where
         self.add_row(items)
     }
 
-    pub fn flush(&mut self) -> Result<()> {
-        self.inner.flush()
+    pub fn close(self) {
+        self.inner.close()
     }
 }

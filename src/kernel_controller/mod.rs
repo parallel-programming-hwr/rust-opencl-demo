@@ -7,25 +7,30 @@
 use ocl::core::DeviceInfo;
 use ocl::enums::DeviceInfoResult;
 use ocl::{CommandQueueProperties, ProQue};
+use ocl_stream::OCLStreamExecutor;
 
 pub mod bench;
 pub mod primes;
+pub mod primes_streamed;
 
 #[derive(Clone)]
 pub struct KernelController {
     pro_que: ProQue,
+    executor: OCLStreamExecutor,
 }
 
 impl KernelController {
     pub fn new() -> ocl::Result<Self> {
         let pro_que = ProQue::builder()
             .src(include_str!("kernel.cl"))
-            .dims(1 << 20)
+            .dims(1) // won't be used as buffer sizes are declared explicitly
             .queue_properties(CommandQueueProperties::PROFILING_ENABLE)
             .build()?;
+        let mut executor = OCLStreamExecutor::new(pro_que.clone());
+        executor.set_concurrency(3);
         println!("Using device {}", pro_que.device().name()?);
 
-        Ok(Self { pro_que })
+        Ok(Self { pro_que, executor })
     }
 
     /// Prints information about the gpu capabilities
