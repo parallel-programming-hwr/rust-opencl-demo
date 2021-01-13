@@ -1,6 +1,6 @@
 /*
  * opencl demos with rust
- * Copyright (C) 2020 trivernis
+ * Copyright (C) 2021 trivernis
  * See LICENSE for more information
  */
 
@@ -11,7 +11,6 @@ use ocl_stream::OCLStreamExecutor;
 
 pub mod bench;
 pub mod primes;
-pub mod primes_streamed;
 
 #[derive(Clone)]
 pub struct KernelController {
@@ -67,6 +66,7 @@ impl KernelController {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn available_memory(&self) -> ocl::Result<u64> {
         match self.pro_que.device().info(DeviceInfo::GlobalMemSize)? {
             DeviceInfoResult::GlobalMemSize(size) => Ok(size),

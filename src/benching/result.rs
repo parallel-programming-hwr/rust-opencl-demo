@@ -1,3 +1,9 @@
+/*
+ * opencl demos with rust
+ * Copyright (C) 2021 trivernis
+ * See LICENSE for more information
+ */
+
 use std::time::Duration;
 
 /// Result of a benched kernel execution

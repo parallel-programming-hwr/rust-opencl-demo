@@ -1,189 +1,172 @@
 /*
  * opencl demos with rust
- * Copyright (C) 2020 trivernis
+ * Copyright (C) 2021 trivernis
  * See LICENSE for more information
  */
 
+use crate::benching::enqueue_profiled;
+use crate::benching::result::ProfiledResult;
 use crate::kernel_controller::KernelController;
-use ocl::core::{get_event_profiling_info, wait_for_event, ProfilingInfo};
-use ocl::EventList;
+use crate::utils::progress::get_progress_bar;
+use ocl::ProQue;
+use ocl_stream::stream::OCLStream;
+use ocl_stream::traits::ToOclBuffer;
 use parking_lot::Mutex;
 use std::mem::size_of;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-pub struct PrimeCalculationResult {
-    pub primes: Vec<u64>,
-    pub gpu_duration: Duration,
-    pub filter_duration: Duration,
-}
+const MEMORY_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
 
 impl KernelController {
-    /// Filters all primes from the input without using a precalculated list of primes
-    /// for divisibility checks
-    pub fn filter_primes_simple(
+    pub fn calculate_primes(
         &self,
-        input: Vec<u64>,
-        local_size: Option<usize>,
-    ) -> ocl::Result<PrimeCalculationResult> {
-        let input_buffer = self.pro_que.buffer_builder().len(input.len()).build()?;
-        input_buffer.write(&input[..]).enq()?;
-
-        let output_buffer = self
-            .pro_que
-            .buffer_builder()
-            .len(input.len())
-            .fill_val(0u8)
-            .build()?;
-
-        let mut builder = self.pro_que.kernel_builder("check_prime");
-        if let Some(local_size) = local_size {
-            builder.local_work_size(local_size);
+        mut start: u64,
+        stop: u64,
+        step: usize,
+        local_size: usize,
+        use_cache: bool,
+    ) -> OCLStream<ProfiledResult<Vec<u64>>> {
+        if start % 2 == 0 {
+            start += 1;
         }
-        let kernel = builder
-            .arg(&input_buffer)
-            .arg(&output_buffer)
-            .global_work_size(input.len())
-            .build()?;
-
-        let start_cpu = Instant::now();
-        let event_start = self.pro_que.queue().enqueue_marker::<EventList>(None)?;
-
-        unsafe {
-            kernel.enq()?;
-        }
-        let event_stop = self.pro_que.queue().enqueue_marker::<EventList>(None)?;
-
-        wait_for_event(&event_start)?;
-        wait_for_event(&event_stop)?;
-
-        let start = get_event_profiling_info(&event_start, ProfilingInfo::End)?;
-        let stop = get_event_profiling_info(&event_stop, ProfilingInfo::Start)?;
-        let gpu_calc_duration = Duration::from_nanos(stop.time()? - start.time()?);
-
-        let mut output = vec![0u8; output_buffer.len()];
-        output_buffer.read(&mut output).enq()?;
-        println!(
-            "GPU Calculation: {} ms\nGPU IO + Calculation: {} ms",
-            gpu_calc_duration.as_secs_f64() * 1000f64,
-            start_cpu.elapsed().as_secs_f64() * 1000f64
+        log::debug!(
+            "Calculating primes between {} and {} with {} number per step and a local size of {}",
+            start,
+            stop,
+            step,
+            local_size
         );
+        let offset = Arc::new(AtomicU64::new(start));
+        let prime_cache = Arc::new(Mutex::new(Vec::new()));
 
-        let filter_start = Instant::now();
-        let primes = map_gpu_prime_result(input, output);
+        if use_cache {
+            prime_cache
+                .lock()
+                .append(&mut get_primes(start + step as u64));
+        }
 
-        Ok(PrimeCalculationResult {
-            primes,
-            filter_duration: filter_start.elapsed(),
-            gpu_duration: gpu_calc_duration,
+        let pb = get_progress_bar((stop - start) / (step * 2) as u64);
+
+        self.executor.execute_bounded(step * 10, move |ctx| {
+            loop {
+                let pro_que = ctx.pro_que();
+                let sender = ctx.sender();
+                if offset.load(Ordering::SeqCst) >= stop {
+                    log::trace!("Stop reached.");
+                    break;
+                }
+                let offset = offset.fetch_add(step as u64 * 2, Ordering::SeqCst);
+                log::trace!("Calculating {} primes beginning from {}", step, offset);
+
+                let numbers = (offset..(step as u64 * 2 + offset))
+                    .step_by(2)
+                    .collect::<Vec<u64>>();
+                let result = if use_cache {
+                    let prime_cache = Arc::clone(&prime_cache);
+                    log::trace!("Using optimized function with cached primes");
+                    Self::filter_primes_cached(pro_que, numbers, local_size, prime_cache)?
+                } else {
+                    log::trace!("Using normal prime calculation function");
+                    Self::filter_primes(pro_que, numbers, local_size)?
+                };
+                sender.send(result)?;
+                pb.inc(1);
+            }
+
+            Ok(())
         })
     }
 
-    /// Filters the primes from a list of numbers by using a precalculated list of primes to check
-    /// for divisibility
-    pub fn filter_primes(
-        &self,
-        input: Vec<u64>,
-        local_size: Option<usize>,
-    ) -> ocl::Result<PrimeCalculationResult> {
-        lazy_static::lazy_static! {static ref PRIME_CACHE: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));}
-        if PRIME_CACHE.lock().len() == 0 {
-            PRIME_CACHE.lock().append(&mut get_primes(
-                (*input.iter().max().unwrap_or(&1024) as f64).sqrt().ceil() as u64,
-            ));
-        }
-
-        let prime_buffer = {
-            let prime_cache = PRIME_CACHE.lock();
-            let prime_buffer = self
-                .pro_que
-                .buffer_builder()
-                .len(prime_cache.len())
-                .build()?;
-
-            prime_buffer.write(&prime_cache[..]).enq()?;
-
-            prime_buffer
-        };
-
-        let input_buffer = self.pro_que.buffer_builder().len(input.len()).build()?;
-        input_buffer.write(&input[..]).enq()?;
-
-        let output_buffer = self
-            .pro_que
+    /// Creates the prime filter kernel and executes it
+    fn filter_primes(
+        pro_que: &ProQue,
+        numbers: Vec<u64>,
+        local_size: usize,
+    ) -> ocl::Result<ProfiledResult<Vec<u64>>> {
+        log::trace!("Creating 0u8 output buffer");
+        let output_buffer = pro_que
             .buffer_builder()
-            .len(input.len())
+            .len(numbers.len())
             .fill_val(0u8)
             .build()?;
 
-        let mut builder = self.pro_que.kernel_builder("check_prime_cached");
-        if let Some(local_size) = local_size {
-            builder.local_work_size(local_size);
-        }
-        let kernel = builder
+        let input_buffer = numbers.to_ocl_buffer(pro_que)?;
+
+        log::trace!("Building 'check_prime' kernel");
+        let kernel = pro_que
+            .kernel_builder("check_prime")
+            .local_work_size(local_size)
+            .arg(&input_buffer)
+            .arg(&output_buffer)
+            .global_work_size(numbers.len())
+            .build()?;
+        let duration = enqueue_profiled(pro_que, &kernel)?;
+
+        log::trace!("Reading output");
+        let mut output = vec![0u8; output_buffer.len()];
+        output_buffer.read(&mut output).enq()?;
+        log::trace!("Filtering primes");
+        let primes = map_gpu_prime_result(numbers, output);
+        log::trace!("Calculated {} primes", primes.len());
+
+        Ok(ProfiledResult::new(duration, primes))
+    }
+
+    pub fn filter_primes_cached(
+        pro_que: &ProQue,
+        numbers: Vec<u64>,
+        local_size: usize,
+        prime_cache: Arc<Mutex<Vec<u64>>>,
+    ) -> ocl::Result<ProfiledResult<Vec<u64>>> {
+        let prime_buffer = prime_cache.lock().to_ocl_buffer(pro_que)?;
+        let input_buffer = numbers.to_ocl_buffer(pro_que)?;
+
+        log::trace!("Creating output buffer");
+        let output_buffer = pro_que
+            .buffer_builder()
+            .len(numbers.len())
+            .fill_val(0u8)
+            .build()?;
+
+        log::trace!("Building 'check_prime_cached' kernel");
+        let kernel = pro_que
+            .kernel_builder("check_prime_cached")
+            .local_work_size(local_size)
             .arg(prime_buffer.len() as u32)
             .arg(&prime_buffer)
             .arg(&input_buffer)
             .arg(&output_buffer)
-            .local_work_size(2)
-            .global_work_size(input.len())
+            .global_work_size(numbers.len())
             .build()?;
 
-        let event_start = self.pro_que.queue().enqueue_marker::<EventList>(None)?;
-        let start_cpu = Instant::now();
+        let duration = enqueue_profiled(pro_que, &kernel)?;
 
-        unsafe {
-            kernel.enq()?;
-        }
-        let event_stop = self.pro_que.queue().enqueue_marker::<EventList>(None)?;
-
-        wait_for_event(&event_start)?;
-        wait_for_event(&event_stop)?;
-
-        let start = get_event_profiling_info(&event_start, ProfilingInfo::End)?;
-        let stop = get_event_profiling_info(&event_stop, ProfilingInfo::Start)?;
-        let gpu_calc_duration = Duration::from_nanos(stop.time()? - start.time()?);
-
+        log::trace!("Reading output");
         let mut output = vec![0u8; output_buffer.len()];
         output_buffer.read(&mut output).enq()?;
 
-        println!(
-            "GPU Calculation: {} ms\nGPU IO + Calculation: {} ms",
-            gpu_calc_duration.as_secs_f64() * 1000f64,
-            start_cpu.elapsed().as_secs_f64() * 1000f64
-        );
+        log::trace!("Mapping prime result");
+        let primes = map_gpu_prime_result(numbers, output);
+        log::trace!("Calculated {} primes", primes.len());
 
-        let prime_filter_start = Instant::now();
-        let primes = map_gpu_prime_result(input, output);
-        let filter_duration = prime_filter_start.elapsed();
+        let mut prime_cache = prime_cache.lock();
 
-        let prime_calc_start = Instant::now();
-        let mut prime_cache = PRIME_CACHE.lock();
-
-        if (prime_cache.len() + primes.len()) * size_of::<i64>()
-            < self.available_memory()? as usize / 4
-        {
+        log::trace!("Updating prime cache");
+        if (prime_cache.len() + primes.len()) * size_of::<i64>() < MEMORY_LIMIT as usize / 4 {
             prime_cache.append(&mut primes.clone());
             prime_cache.sort();
             prime_cache.dedup();
         }
-        let cache_duration = prime_calc_start.elapsed();
-        println!(
-            "Prime caching took: {} ms, size: {}",
-            cache_duration.as_secs_f64() * 1000f64,
-            prime_cache.len(),
-        );
 
-        Ok(PrimeCalculationResult {
-            primes,
-            gpu_duration: gpu_calc_duration,
-            filter_duration,
-        })
+        Ok(ProfiledResult::new(duration, primes))
     }
 }
 
 /// Returns a list of prime numbers that can be used to speed up the divisibility check
-pub fn get_primes(max_number: u64) -> Vec<u64> {
+fn get_primes(max_number: u64) -> Vec<u64> {
+    log::trace!("Calculating primes until {} on the cpu", max_number);
     let start = Instant::now();
     let mut primes = Vec::with_capacity((max_number as f64).sqrt() as usize);
     let mut num = 1;
@@ -217,7 +200,7 @@ pub fn get_primes(max_number: u64) -> Vec<u64> {
         }
         num += 2;
     }
-    println!(
+    log::trace!(
         "Generated {} primes on the cpu in {} ms",
         primes.len(),
         start.elapsed().as_secs_f64() * 1000f64,

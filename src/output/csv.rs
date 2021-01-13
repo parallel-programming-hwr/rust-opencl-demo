@@ -1,6 +1,6 @@
 /*
  * opencl demos with rust
- * Copyright (C) 2020 trivernis
+ * Copyright (C) 2021 trivernis
  * See LICENSE for more information
  */
 
@@ -23,6 +23,7 @@ impl ThreadedCSVWriter {
             .iter()
             .map(|column| column.to_string())
             .collect::<Vec<String>>();
+        log::trace!("Creating new CSV Writer with columns: {:?}", column_vec);
 
         let writer = ThreadedWriter::new(writer, |v: String| v.as_bytes().to_vec());
         let mut csv_writer = Self {
@@ -36,6 +37,7 @@ impl ThreadedCSVWriter {
 
     /// Adds a new row of values to the file
     pub fn add_row(&mut self, items: Vec<String>) {
+        log::trace!("Adding row to CSV: {:?}", items);
         self.inner.write(
             items
                 .iter()

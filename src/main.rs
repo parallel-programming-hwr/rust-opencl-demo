@@ -1,32 +1,29 @@
 /*
  * opencl demos with rust
- * Copyright (C) 2020 trivernis
+ * Copyright (C) 2021 trivernis
  * See LICENSE for more information
  */
 
-use crate::concurrency::executor::ConcurrentKernelExecutor;
 use crate::kernel_controller::primes::is_prime;
 use crate::kernel_controller::KernelController;
-use crate::output::create_prime_write_thread;
 use crate::output::csv::ThreadedCSVWriter;
 use crate::output::threaded::ThreadedWriter;
 
 use crate::kernel_controller::bench::BenchStatistics;
+use crate::utils::logging::init_logger;
 use ocl_stream::stream::OCLStream;
 use ocl_stream::utils::result::{OCLStreamError, OCLStreamResult};
 use rayon::prelude::*;
 use std::fs::{File, OpenOptions};
 use std::io::BufWriter;
-use std::mem;
 use std::path::PathBuf;
-use std::sync::mpsc::channel;
 use std::time::Duration;
 use structopt::StructOpt;
 
 mod benching;
-mod concurrency;
 mod kernel_controller;
 mod output;
+mod utils;
 
 #[derive(StructOpt, Clone, Debug)]
 #[structopt()]
@@ -89,10 +86,6 @@ struct CalculatePrimes {
     /// number of used threads
     #[structopt(short = "p", long = "parallel", default_value = "2")]
     num_threads: usize,
-
-    /// if the result should be streamed
-    #[structopt(long = "streamed")]
-    streamed: bool,
 }
 
 #[derive(StructOpt, Clone, Debug)]
@@ -160,22 +153,18 @@ pub struct BenchOptions {
 fn main() -> OCLStreamResult<()> {
     let opts: Opts = Opts::from_args();
     let controller = KernelController::new()?;
+    init_logger();
 
     match opts {
         Opts::Info => controller.print_info().map_err(OCLStreamError::from),
-        Opts::CalculatePrimes(prime_opts) => {
-            if prime_opts.streamed {
-                calculate_primes_streamed(prime_opts, controller)
-            } else {
-                calculate_primes(prime_opts, controller).map_err(OCLStreamError::from)
-            }
-        }
+        Opts::CalculatePrimes(prime_opts) => calculate_primes(prime_opts, controller),
         Opts::BenchGlobalSize(bench_opts) => bench_global_size(bench_opts, controller),
         Opts::BenchLocalSize(bench_opts) => bench_local_size(bench_opts, controller),
     }
 }
 
-fn calculate_primes_streamed(
+/// Calculates primes on the GPU
+fn calculate_primes(
     prime_opts: CalculatePrimes,
     mut controller: KernelController,
 ) -> OCLStreamResult<()> {
@@ -192,7 +181,7 @@ fn calculate_primes_streamed(
             .into_bytes()
     });
 
-    let mut stream = controller.get_primes(
+    let mut stream = controller.calculate_primes(
         prime_opts.start_offset,
         prime_opts.max_number,
         prime_opts.numbers_per_step,
@@ -205,7 +194,7 @@ fn calculate_primes_streamed(
             validate_primes_on_cpu(primes);
         }
         let first = *primes.first().unwrap(); // if there's none, rip
-        println!(
+        log::debug!(
             "Calculated {} primes in {:?}, offset: {}",
             primes.len(),
             r.gpu_duration(),
@@ -220,83 +209,6 @@ fn calculate_primes_streamed(
     }
     csv_writer.close();
     output_writer.close();
-
-    Ok(())
-}
-
-/// Calculates Prime numbers with GPU acceleration
-fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -> ocl::Result<()> {
-    let output = BufWriter::new(
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&prime_opts.output_file)
-            .unwrap(),
-    );
-    let timings = BufWriter::new(
-        OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&prime_opts.timings_file)
-            .unwrap(),
-    );
-    let mut csv_writer = ThreadedCSVWriter::new(
-        timings,
-        &["offset", "count", "gpu_duration", "filter_duration"],
-    );
-
-    let (prime_sender, prime_handle) = create_prime_write_thread(output);
-
-    let mut offset = prime_opts.start_offset;
-    if offset % 2 == 0 {
-        offset += 1;
-    }
-    if offset < 2 {
-        prime_sender.send(vec![2]).unwrap();
-    }
-    let executor = ConcurrentKernelExecutor::new(controller);
-    let (tx, rx) = channel();
-
-    let executor_thread = std::thread::spawn({
-        let prime_opts = prime_opts.clone();
-        move || {
-            executor.calculate_primes(
-                prime_opts.start_offset,
-                prime_opts.numbers_per_step,
-                prime_opts.local_size,
-                prime_opts.max_number,
-                prime_opts.no_cache,
-                prime_opts.num_threads,
-                tx,
-            )
-        }
-    });
-    for prime_result in rx {
-        let offset = prime_result.primes.last().cloned().unwrap();
-        let primes = prime_result.primes;
-        println!(
-            "Calculated {} primes: {:.4} checks/s, offset: {}",
-            primes.len(),
-            prime_opts.numbers_per_step as f64 / prime_result.gpu_duration.as_secs_f64(),
-            offset,
-        );
-        csv_writer.add_row(vec![
-            offset.to_string(),
-            primes.len().to_string(),
-            duration_to_ms_string(&prime_result.gpu_duration),
-            duration_to_ms_string(&prime_result.filter_duration),
-        ]);
-        if prime_opts.cpu_validate {
-            validate_primes_on_cpu(&primes)
-        }
-        prime_sender.send(primes).unwrap();
-    }
-
-    mem::drop(prime_sender);
-    prime_handle.join().unwrap();
-    csv_writer.close();
-    executor_thread.join().unwrap();
 
     Ok(())
 }
@@ -365,7 +277,7 @@ fn read_bench_results(
     loop {
         match stream.next() {
             Ok(stats) => {
-                println!("{}\n", stats);
+                log::debug!("{:?}", stats);
                 csv_writer.add_row(vec![
                     stats.local_size.to_string(),
                     stats.global_size.to_string(),
@@ -384,7 +296,7 @@ fn read_bench_results(
 }
 
 fn validate_primes_on_cpu(primes: &Vec<u64>) {
-    println!("Validating...");
+    log::debug!("Validating primes on the cpu");
     let failures = primes
         .par_iter()
         .filter(|n| !is_prime(**n))
@@ -396,7 +308,7 @@ fn validate_primes_on_cpu(primes: &Vec<u64>) {
             failures
         );
     } else {
-        println!("No failures found.");
+        log::debug!("No failures found.");
     }
 }
 
