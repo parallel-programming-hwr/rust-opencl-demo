@@ -11,7 +11,9 @@ use crate::output::create_prime_write_thread;
 use crate::output::csv::ThreadedCSVWriter;
 use crate::output::threaded::ThreadedWriter;
 
-use ocl_stream::utils::result::OCLStreamResult;
+use crate::kernel_controller::bench::BenchStatistics;
+use ocl_stream::stream::OCLStream;
+use ocl_stream::utils::result::{OCLStreamError, OCLStreamResult};
 use rayon::prelude::*;
 use std::fs::{File, OpenOptions};
 use std::io::BufWriter;
@@ -33,9 +35,13 @@ enum Opts {
     #[structopt(name = "calculate-primes")]
     CalculatePrimes(CalculatePrimes),
 
-    /// Benchmarks the number of tasks used for the calculations
-    #[structopt(name = "bench-task-count")]
-    BenchmarkTaskCount(BenchmarkTaskCount),
+    /// Benchmarks the local size value
+    #[structopt(name = "bench-local-size")]
+    BenchLocalSize(BenchLocalSize),
+
+    /// Benchmarks the global size (number of tasks) value
+    #[structopt(name = "bench-global-size")]
+    BenchGlobalSize(BenchGlobalSize),
 
     /// Prints GPU information
     Info,
@@ -90,62 +96,82 @@ struct CalculatePrimes {
 }
 
 #[derive(StructOpt, Clone, Debug)]
-struct BenchmarkTaskCount {
-    /// How many calculations steps should be done per GPU thread
-    #[structopt(long = "calculation-steps", default_value = "1000000")]
-    calculation_steps: u32,
-
-    /// The initial number of tasks for the benchmark
-    #[structopt(long = "num-tasks-start", default_value = "1")]
-    num_tasks_start: usize,
+struct BenchLocalSize {
+    #[structopt(flatten)]
+    bench_options: BenchOptions,
 
     /// The initial number for the local size
-    #[structopt(long = "local-size-start")]
-    local_size_start: Option<usize>,
+    #[structopt(long = "local-size-start", default_value = "4")]
+    local_size_start: usize,
 
     /// The amount the local size increases by every step
-    #[structopt(long = "local-size-step", default_value = "10")]
+    #[structopt(long = "local-size-step", default_value = "4")]
     local_size_step: usize,
 
     /// The maximum amount of the local size
     /// Can't be greater than the maximum local size of the gpu
     /// that can be retrieved with the info command
-    #[structopt(long = "local-size-stop")]
-    local_size_stop: Option<usize>,
+    #[structopt(long = "local-size-stop", default_value = "1024")]
+    local_size_stop: usize,
 
     /// The maximum number of tasks for the benchmark
-    #[structopt(long = "num-tasks-stop", default_value = "10000000")]
-    num_tasks_stop: usize,
+    #[structopt(long = "global-size", default_value = "6144")]
+    global_size: usize,
+}
 
-    /// The amount the task number increases per step
-    #[structopt(long = "num-tasks-step", default_value = "10")]
-    num_tasks_step: usize,
+#[derive(StructOpt, Clone, Debug)]
+pub struct BenchGlobalSize {
+    #[structopt(flatten)]
+    options: BenchOptions,
+
+    /// The start value for the used global size
+    #[structopt(long = "global-size-start", default_value = "1024")]
+    global_size_start: usize,
+
+    /// The step value for the used global size
+    #[structopt(long = "global-size-step", default_value = "128")]
+    global_size_step: usize,
+
+    /// The stop value for the used global size
+    #[structopt(long = "global-size-stop", default_value = "1048576")]
+    global_size_stop: usize,
+
+    /// The maximum number of tasks for the benchmark
+    #[structopt(long = "local-size", default_value = "128")]
+    local_size: usize,
+}
+
+#[derive(StructOpt, Clone, Debug)]
+pub struct BenchOptions {
+    /// How many calculations steps should be done per GPU thread
+    #[structopt(short = "n", long = "calculation-steps", default_value = "1000000")]
+    calculation_steps: u32,
+
+    /// The output file for timings
+    #[structopt(short = "o", long = "bench-output", default_value = "bench.csv")]
+    benchmark_file: PathBuf,
 
     /// The average of n runs that is used instead of using one value only.
     /// By default the benchmark for each step is only run once
-    #[structopt(long = "average-of", default_value = "1")]
-    average_of: usize,
-
-    /// The output file for timings
-    #[structopt(long = "bench-output", default_value = "bench.csv")]
-    benchmark_file: PathBuf,
+    #[structopt(short = "r", long = "repetitions", default_value = "1")]
+    repetitions: usize,
 }
 
-fn main() -> ocl::Result<()> {
+fn main() -> OCLStreamResult<()> {
     let opts: Opts = Opts::from_args();
     let controller = KernelController::new()?;
 
     match opts {
-        Opts::Info => controller.print_info(),
+        Opts::Info => controller.print_info().map_err(OCLStreamError::from),
         Opts::CalculatePrimes(prime_opts) => {
             if prime_opts.streamed {
-                calculate_primes_streamed(prime_opts, controller).unwrap();
-                Ok(())
+                calculate_primes_streamed(prime_opts, controller)
             } else {
-                calculate_primes(prime_opts, controller)
+                calculate_primes(prime_opts, controller).map_err(OCLStreamError::from)
             }
         }
-        Opts::BenchmarkTaskCount(bench_opts) => bench_task_count(bench_opts, controller),
+        Opts::BenchGlobalSize(bench_opts) => bench_global_size(bench_opts, controller),
+        Opts::BenchLocalSize(bench_opts) => bench_local_size(bench_opts, controller),
     }
 }
 
@@ -275,65 +301,86 @@ fn calculate_primes(prime_opts: CalculatePrimes, controller: KernelController) -
     Ok(())
 }
 
-fn bench_task_count(opts: BenchmarkTaskCount, controller: KernelController) -> ocl::Result<()> {
-    let bench_writer = BufWriter::new(
-        OpenOptions::new()
-            .truncate(true)
-            .write(true)
-            .create(true)
-            .open(opts.benchmark_file)
-            .unwrap(),
-    );
-    let mut csv_writer = ThreadedCSVWriter::new(
+/// Benchmarks the local size used for calculations
+fn bench_local_size(opts: BenchLocalSize, controller: KernelController) -> OCLStreamResult<()> {
+    let bench_writer = open_write_buffered(&opts.bench_options.benchmark_file);
+    let csv_writer = ThreadedCSVWriter::new(
         bench_writer,
         &[
             "local_size",
-            "num_tasks",
+            "global_size",
             "calc_count",
             "write_duration",
             "gpu_duration",
             "read_duration",
         ],
     );
-    for n in (opts.num_tasks_start..=opts.num_tasks_stop).step_by(opts.num_tasks_step) {
-        if let (Some(start), Some(stop)) = (opts.local_size_start, opts.local_size_stop) {
-            for l in (start..=stop)
-                .step_by(opts.local_size_step)
-                .filter(|v| n % v == 0)
-            {
-                let mut stats = controller.bench_int(opts.calculation_steps, n, Some(l))?;
-                for _ in 1..opts.average_of {
-                    stats.avg(controller.bench_int(opts.calculation_steps, n, Some(l))?)
-                }
+    let stream = controller.bench_local_size(
+        opts.global_size,
+        opts.local_size_start,
+        opts.local_size_step,
+        opts.local_size_stop,
+        opts.bench_options.calculation_steps,
+        opts.bench_options.repetitions,
+    )?;
+    read_bench_results(opts.bench_options.calculation_steps, csv_writer, stream);
+
+    Ok(())
+}
+
+/// Benchmarks the global size used for calculations
+fn bench_global_size(opts: BenchGlobalSize, controller: KernelController) -> OCLStreamResult<()> {
+    let bench_writer = open_write_buffered(&opts.options.benchmark_file);
+    let csv_writer = ThreadedCSVWriter::new(
+        bench_writer,
+        &[
+            "local_size",
+            "global_size",
+            "calc_count",
+            "write_duration",
+            "gpu_duration",
+            "read_duration",
+        ],
+    );
+    let stream = controller.bench_global_size(
+        opts.local_size,
+        opts.global_size_start,
+        opts.global_size_step,
+        opts.global_size_stop,
+        opts.options.calculation_steps,
+        opts.options.repetitions,
+    )?;
+    read_bench_results(opts.options.calculation_steps, csv_writer, stream);
+
+    Ok(())
+}
+
+/// Reads benchmark results from the stream and prints
+/// them to the console
+fn read_bench_results(
+    calculation_steps: u32,
+    mut csv_writer: ThreadedCSVWriter,
+    mut stream: OCLStream<BenchStatistics>,
+) {
+    loop {
+        match stream.next() {
+            Ok(stats) => {
                 println!("{}\n", stats);
                 csv_writer.add_row(vec![
-                    l.to_string(),
-                    n.to_string(),
-                    opts.calculation_steps.to_string(),
+                    stats.local_size.to_string(),
+                    stats.global_size.to_string(),
+                    calculation_steps.to_string(),
                     duration_to_ms_string(&stats.write_duration),
                     duration_to_ms_string(&stats.calc_duration),
                     duration_to_ms_string(&stats.read_duration),
                 ])
             }
-        } else {
-            let mut stats = controller.bench_int(opts.calculation_steps, n, None)?;
-            for _ in 1..opts.average_of {
-                stats.avg(controller.bench_int(opts.calculation_steps, n, None)?)
+            _ => {
+                break;
             }
-            println!("{}\n", stats);
-            csv_writer.add_row(vec![
-                "n/a".to_string(),
-                n.to_string(),
-                opts.calculation_steps.to_string(),
-                duration_to_ms_string(&stats.write_duration),
-                duration_to_ms_string(&stats.calc_duration),
-                duration_to_ms_string(&stats.read_duration),
-            ]);
         }
     }
     csv_writer.close();
-
-    Ok(())
 }
 
 fn validate_primes_on_cpu(primes: &Vec<u64>) {

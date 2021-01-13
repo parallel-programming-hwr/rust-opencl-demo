@@ -4,14 +4,22 @@
  * See LICENSE for more information
  */
 
+use crate::benching::enqueue_profiled;
 use crate::kernel_controller::KernelController;
+use ocl_stream::executor::context::ExecutorContext;
+use ocl_stream::executor::stream::OCLStream;
+use ocl_stream::traits::*;
+use ocl_stream::utils::result::OCLStreamResult;
+use ocl_stream::utils::shared_buffer::SharedBuffer;
 use std::fmt::{self, Display, Formatter};
+use std::ops::Deref;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 pub struct BenchStatistics {
     pub calc_count: u32,
-    pub num_tasks: usize,
-    pub local_size: Option<usize>,
+    pub global_size: usize,
+    pub local_size: usize,
     pub write_duration: Duration,
     pub calc_duration: Duration,
     pub read_duration: Duration,
@@ -23,8 +31,8 @@ impl Display for BenchStatistics {
             f,
             "Calculation Count: {}\nTask Count: {}\nLocal Size: {}\nWrite Duration: {} ms\nGPU Duration: {} ms\nRead Duration: {} ms",
             self.calc_count,
-            self.num_tasks,
-            self.local_size.map(|v|v.to_string()).unwrap_or("n/a".to_string()),
+            self.global_size,
+            self.local_size,
             self.write_duration.as_secs_f64() * 1000f64,
             self.calc_duration.as_secs_f64() * 1000f64,
             self.read_duration.as_secs_f64() * 1000f64
@@ -32,55 +40,108 @@ impl Display for BenchStatistics {
     }
 }
 
-impl BenchStatistics {
-    pub fn avg(&mut self, other: Self) {
-        self.read_duration = (self.read_duration + other.read_duration) / 2;
-        self.write_duration = (self.write_duration + other.write_duration) / 2;
-        self.calc_duration = (self.calc_duration + other.calc_duration) / 2;
-    }
-}
-
 impl KernelController {
-    /// Benches an integer
-    pub fn bench_int(
+    /// Benchmarks the value for the global size
+    pub fn bench_global_size(
         &self,
+        local_size: usize,
+        global_size_start: usize,
+        global_size_step: usize,
+        global_size_stop: usize,
         calc_count: u32,
-        num_tasks: usize,
-        local_size: Option<usize>,
+        repetitions: usize,
+    ) -> OCLStreamResult<OCLStream<BenchStatistics>> {
+        let global_size = AtomicUsize::new(global_size_start);
+
+        let stream = self.executor.execute_bounded(global_size_stop, move |ctx| {
+            loop {
+                if global_size.load(Ordering::SeqCst) > global_size_stop {
+                    break;
+                }
+                let global_size = global_size.fetch_add(global_size_step, Ordering::SeqCst);
+                if global_size % local_size != 0 {
+                    continue;
+                }
+                let input_buffer: SharedBuffer<u32> =
+                    vec![0u32; global_size].to_shared_buffer(ctx.pro_que())?;
+
+                for _ in 0..repetitions {
+                    let stats =
+                        Self::bench_int(&ctx, local_size, calc_count, input_buffer.clone())?;
+                    ctx.sender().send(stats)?;
+                }
+            }
+            Ok(())
+        });
+
+        Ok(stream)
+    }
+
+    /// Benchmarks the value for the local size
+    pub fn bench_local_size(
+        &self,
+        global_size: usize,
+        local_size_start: usize,
+        local_size_step: usize,
+        local_size_stop: usize,
+        calc_count: u32,
+        repetitions: usize,
+    ) -> OCLStreamResult<OCLStream<BenchStatistics>> {
+        let input_buffer: SharedBuffer<u32> =
+            vec![0u32; global_size].to_shared_buffer(self.executor.pro_que())?;
+        let local_size = AtomicUsize::new(local_size_start);
+
+        let stream = self.executor.execute_bounded(global_size, move |ctx| {
+            loop {
+                if local_size.load(Ordering::SeqCst) > local_size_stop {
+                    break;
+                }
+                let local_size = local_size.fetch_add(local_size_step, Ordering::SeqCst);
+                if local_size > 1024 || global_size % local_size != 0 {
+                    continue;
+                }
+
+                for _ in 0..repetitions {
+                    let stats =
+                        Self::bench_int(&ctx, local_size, calc_count, input_buffer.clone())?;
+                    ctx.sender().send(stats)?;
+                }
+            }
+            Ok(())
+        });
+
+        Ok(stream)
+    }
+
+    /// Benches an integer
+    fn bench_int(
+        ctx: &ExecutorContext<BenchStatistics>,
+        local_size: usize,
+        calc_count: u32,
+        input_buffer: SharedBuffer<u32>,
     ) -> ocl::Result<BenchStatistics> {
+        let num_tasks = input_buffer.inner().lock().len();
         let write_start = Instant::now();
-        let input_buffer = self
-            .pro_que
-            .buffer_builder()
-            .len(num_tasks)
-            .fill_val(0u32)
-            .build()?;
         let write_duration = write_start.elapsed();
 
-        let mut builder = self.pro_que.kernel_builder("bench_int");
-
-        if let Some(local_size) = local_size {
-            builder.local_work_size(local_size);
-        }
-
-        let kernel = builder
-            .arg(calc_count)
-            .arg(&input_buffer)
+        let kernel = ctx
+            .pro_que()
+            .kernel_builder("bench_int")
+            .local_work_size(local_size)
             .global_work_size(num_tasks)
+            .arg(calc_count)
+            .arg(input_buffer.inner().lock().deref())
             .build()?;
-        let calc_start = Instant::now();
-        unsafe {
-            kernel.enq()?;
-        }
-        self.pro_que.finish()?;
-        let calc_duration = calc_start.elapsed();
+
+        let calc_duration = enqueue_profiled(ctx.pro_que(), &kernel)?;
+
         let mut output = vec![0u32; num_tasks];
         let read_start = Instant::now();
-        input_buffer.read(&mut output).enq()?;
+        input_buffer.read(&mut output)?;
         let read_duration = read_start.elapsed();
 
         Ok(BenchStatistics {
-            num_tasks,
+            global_size: num_tasks,
             calc_count,
             local_size,
             read_duration,

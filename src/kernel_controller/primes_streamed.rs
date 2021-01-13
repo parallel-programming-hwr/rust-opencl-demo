@@ -68,6 +68,7 @@ impl KernelController {
             .fill_val(0u8)
             .build()?;
         let input_buffer = numbers.to_ocl_buffer(pro_que)?;
+
         let kernel = pro_que
             .kernel_builder("check_prime")
             .local_work_size(local_size)

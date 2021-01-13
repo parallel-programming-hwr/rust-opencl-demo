@@ -517,13 +517,14 @@ dependencies = [
 
 [[package]]
 name = "ocl-stream"
-version = "0.3.0"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6571c0dc580e1603bdf23e277402b8dea73c0631de6a123b796da9a27681c960"
+checksum = "2cc003c0e91a8daaa706bd4231a05080d18346c97dc051955cce45de60a54ac7"
 dependencies = [
  "crossbeam-channel 0.5.0",
  "num_cpus",
  "ocl",
+ "parking_lot",
  "thiserror",
 ]
 
