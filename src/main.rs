@@ -31,6 +31,7 @@ use crate::output::csv::ThreadedCSVWriter;
 use crate::output::threaded::ThreadedWriter;
 use crate::utils::args::UseColors;
 use crate::utils::logging::init_logger;
+use chrono::Local;
 
 fn main() -> OCLStreamResult<()> {
     let opts: Opts = Opts::from_args();
@@ -54,7 +55,8 @@ fn calculate_primes(
     controller.set_concurrency(prime_opts.general_options.threads);
 
     let csv_file = open_write_buffered(&prime_opts.timings_file);
-    let mut csv_writer = ThreadedCSVWriter::new(csv_file, &["first", "count", "gpu_duration"]);
+    let mut csv_writer =
+        ThreadedCSVWriter::new(csv_file, &["timestamp", "first", "count", "gpu_duration"]);
     let output_file = open_write_buffered(&prime_opts.output_file);
 
     let output_writer = ThreadedWriter::new(output_file, |v: Vec<u64>| {
@@ -84,6 +86,7 @@ fn calculate_primes(
             first
         );
         csv_writer.add_row(vec![
+            Local::now().format("%Y-%m-%dT%H:%M:%S.%f").to_string(),
             first.to_string(),
             primes.len().to_string(),
             duration_to_ms_string(r.gpu_duration()),
@@ -104,6 +107,7 @@ fn bench_local_size(opts: BenchLocalSize, mut controller: KernelController) -> O
     let csv_writer = ThreadedCSVWriter::new(
         bench_writer,
         &[
+            "timestamp",
             "local_size",
             "global_size",
             "calc_count",
@@ -136,6 +140,7 @@ fn bench_global_size(
     let csv_writer = ThreadedCSVWriter::new(
         bench_writer,
         &[
+            "timestamp",
             "local_size",
             "global_size",
             "calc_count",
@@ -169,6 +174,7 @@ fn read_bench_results(
             Ok(stats) => {
                 log::debug!("{:?}", stats);
                 csv_writer.add_row(vec![
+                    Local::now().format("%Y-%m-%dT%H:%M:%S.%f").to_string(),
                     stats.local_size.to_string(),
                     stats.global_size.to_string(),
                     calculation_steps.to_string(),
