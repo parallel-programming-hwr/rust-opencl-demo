@@ -125,8 +125,8 @@ pub struct BenchOptions {
     pub calculation_steps: u32,
 
     /// The output file for timings
-    #[structopt(short = "o", long = "bench-output", default_value = "bench.csv")]
-    pub benchmark_file: PathBuf,
+    #[structopt(short = "o", long = "bench-output")]
+    pub benchmark_file: Option<PathBuf>,
 
     /// The average of n runs that is used instead of using one value only.
     /// By default the benchmark for each step is only run once

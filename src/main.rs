@@ -103,7 +103,20 @@ fn calculate_primes(
 fn bench_local_size(opts: BenchLocalSize, mut controller: KernelController) -> OCLStreamResult<()> {
     set_output_colored(opts.bench_options.general_options.color);
     controller.set_concurrency(opts.bench_options.general_options.threads);
-    let bench_writer = open_write_buffered(&opts.bench_options.benchmark_file);
+    let bench_output = opts
+        .bench_options
+        .benchmark_file
+        .unwrap_or(PathBuf::from(format!(
+            "bench_local_{}-{}-{}_g{}_r{}_s{}_{}.csv",
+            opts.local_size_start,
+            opts.local_size_step,
+            opts.local_size_stop,
+            opts.global_size,
+            opts.bench_options.repetitions,
+            opts.bench_options.calculation_steps,
+            Local::now().format("%Y%m%d%H%M%S")
+        )));
+    let bench_writer = open_write_buffered(&bench_output);
     let csv_writer = ThreadedCSVWriter::new(
         bench_writer,
         &[
@@ -136,7 +149,20 @@ fn bench_global_size(
 ) -> OCLStreamResult<()> {
     set_output_colored(opts.bench_options.general_options.color);
     controller.set_concurrency(opts.bench_options.general_options.threads);
-    let bench_writer = open_write_buffered(&opts.bench_options.benchmark_file);
+    let bench_output = opts
+        .bench_options
+        .benchmark_file
+        .unwrap_or(PathBuf::from(format!(
+            "bench_global_{}-{}-{}_l{}_r{}_s{}_{}.csv",
+            opts.global_size_start,
+            opts.global_size_step,
+            opts.global_size_stop,
+            opts.local_size,
+            opts.bench_options.repetitions,
+            opts.bench_options.calculation_steps,
+            Local::now().format("%Y%m%d%H%M%S")
+        )));
+    let bench_writer = open_write_buffered(&bench_output);
     let csv_writer = ThreadedCSVWriter::new(
         bench_writer,
         &[
