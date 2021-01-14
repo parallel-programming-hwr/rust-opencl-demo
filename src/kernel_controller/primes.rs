@@ -21,6 +21,7 @@ use std_semaphore::Semaphore;
 const MEMORY_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
 
 impl KernelController {
+    /// Calculates prime numbers on the gpu
     pub fn calculate_primes(
         &self,
         mut start: u64,
@@ -117,6 +118,8 @@ impl KernelController {
         Ok(ProfiledResult::new(duration, primes))
     }
 
+    /// Filters primes by using the primes from previous
+    /// calculations for divisibility checks
     pub fn filter_primes_cached(
         pro_que: &ProQue,
         numbers: Vec<u64>,
@@ -213,6 +216,7 @@ fn get_primes(max_number: u64) -> Vec<u64> {
     primes
 }
 
+/// Checks if a number is a prime number
 pub fn is_prime(number: u64) -> bool {
     if number == 2 || number == 3 {
         return true;
