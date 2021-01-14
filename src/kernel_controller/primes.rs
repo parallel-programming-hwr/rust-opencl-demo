@@ -16,6 +16,7 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+use std_semaphore::Semaphore;
 
 const MEMORY_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
 
@@ -48,6 +49,7 @@ impl KernelController {
         }
 
         let pb = get_progress_bar((stop - start) / (step * 2) as u64);
+        let sem = Semaphore::new(1);
 
         self.executor.execute_bounded(step * 10, move |ctx| {
             loop {
@@ -66,10 +68,10 @@ impl KernelController {
                 let result = if use_cache {
                     let prime_cache = Arc::clone(&prime_cache);
                     log::trace!("Using optimized function with cached primes");
-                    Self::filter_primes_cached(pro_que, numbers, local_size, prime_cache)?
+                    Self::filter_primes_cached(pro_que, numbers, local_size, prime_cache, &sem)?
                 } else {
                     log::trace!("Using normal prime calculation function");
-                    Self::filter_primes(pro_que, numbers, local_size)?
+                    Self::filter_primes(pro_que, numbers, local_size, &sem)?
                 };
                 sender.send(result)?;
                 pb.inc(1);
@@ -84,6 +86,7 @@ impl KernelController {
         pro_que: &ProQue,
         numbers: Vec<u64>,
         local_size: usize,
+        sem: &Semaphore,
     ) -> ocl::Result<ProfiledResult<Vec<u64>>> {
         log::trace!("Creating 0u8 output buffer");
         let output_buffer = pro_que
@@ -102,7 +105,7 @@ impl KernelController {
             .arg(&output_buffer)
             .global_work_size(numbers.len())
             .build()?;
-        let duration = enqueue_profiled(pro_que, &kernel)?;
+        let duration = enqueue_profiled(pro_que, &kernel, &sem)?;
 
         log::trace!("Reading output");
         let mut output = vec![0u8; output_buffer.len()];
@@ -119,6 +122,7 @@ impl KernelController {
         numbers: Vec<u64>,
         local_size: usize,
         prime_cache: Arc<Mutex<Vec<u64>>>,
+        sem: &Semaphore,
     ) -> ocl::Result<ProfiledResult<Vec<u64>>> {
         let prime_buffer = prime_cache.lock().to_ocl_buffer(pro_que)?;
         let input_buffer = numbers.to_ocl_buffer(pro_que)?;
@@ -141,7 +145,7 @@ impl KernelController {
             .global_work_size(numbers.len())
             .build()?;
 
-        let duration = enqueue_profiled(pro_que, &kernel)?;
+        let duration = enqueue_profiled(pro_que, &kernel, sem)?;
 
         log::trace!("Reading output");
         let mut output = vec![0u8; output_buffer.len()];

@@ -18,6 +18,7 @@ use ocl_stream::utils::shared_buffer::SharedBuffer;
 use crate::benching::enqueue_profiled;
 use crate::kernel_controller::KernelController;
 use crate::utils::progress::get_progress_bar;
+use std_semaphore::Semaphore;
 
 #[derive(Clone, Debug)]
 pub struct BenchStatistics {
@@ -61,6 +62,7 @@ impl KernelController {
         let pb = get_progress_bar(
             ((global_size_stop - global_size_start) / global_size_step) as u64 * repetitions as u64,
         );
+        let sem = Semaphore::new(1);
 
         let stream = self.executor.execute_bounded(global_size_stop, move |ctx| {
             loop {
@@ -85,7 +87,7 @@ impl KernelController {
                 );
                 for _ in 0..repetitions {
                     let stats =
-                        Self::bench_int(&ctx, local_size, calc_count, input_buffer.clone())?;
+                        Self::bench_int(&ctx, local_size, calc_count, input_buffer.clone(), &sem)?;
                     ctx.sender().send(stats)?;
                     pb.inc(1);
                 }
@@ -115,6 +117,7 @@ impl KernelController {
         let pb = get_progress_bar(
             ((local_size_stop - local_size_start) / local_size_step) as u64 * repetitions as u64,
         );
+        let sem = Semaphore::new(1);
 
         let stream = self.executor.execute_bounded(global_size, move |ctx| {
             loop {
@@ -137,7 +140,7 @@ impl KernelController {
                 );
                 for _ in 0..repetitions {
                     let stats =
-                        Self::bench_int(&ctx, local_size, calc_count, input_buffer.clone())?;
+                        Self::bench_int(&ctx, local_size, calc_count, input_buffer.clone(), &sem)?;
                     ctx.sender().send(stats)?;
                     pb.inc(1);
                 }
@@ -154,6 +157,7 @@ impl KernelController {
         local_size: usize,
         calc_count: u32,
         input_buffer: SharedBuffer<u32>,
+        sem: &Semaphore,
     ) -> ocl::Result<BenchStatistics> {
         let num_tasks = input_buffer.inner().lock().len();
 
@@ -167,7 +171,7 @@ impl KernelController {
             .arg(input_buffer.inner().lock().deref())
             .build()?;
 
-        let calc_duration = enqueue_profiled(ctx.pro_que(), &kernel)?;
+        let calc_duration = enqueue_profiled(ctx.pro_que(), &kernel, sem)?;
 
         log::trace!("Reading output");
         let mut output = vec![0u32; num_tasks];
