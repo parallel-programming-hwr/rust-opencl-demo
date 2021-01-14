@@ -162,6 +162,7 @@ impl KernelController {
         let num_tasks = input_buffer.inner().lock().len();
 
         log::trace!("Building kernel");
+        sem.acquire();
         let kernel = ctx
             .pro_que()
             .kernel_builder("bench_int")
@@ -170,14 +171,17 @@ impl KernelController {
             .arg(calc_count)
             .arg(input_buffer.inner().lock().deref())
             .build()?;
+        sem.release();
 
         let calc_duration = enqueue_profiled(ctx.pro_que(), &kernel, sem)?;
 
         log::trace!("Reading output");
         let mut output = vec![0u32; num_tasks];
+        sem.acquire();
         let read_start = Instant::now();
         input_buffer.read(&mut output)?;
         let read_duration = read_start.elapsed();
+        sem.release();
 
         Ok(BenchStatistics {
             global_size: num_tasks,

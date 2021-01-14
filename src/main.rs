@@ -7,6 +7,11 @@
 #[macro_use]
 extern crate clap;
 
+mod benching;
+mod kernel_controller;
+mod output;
+mod utils;
+
 use std::fs::{File, OpenOptions};
 use std::io::BufWriter;
 use std::path::PathBuf;
@@ -26,11 +31,6 @@ use crate::output::csv::ThreadedCSVWriter;
 use crate::output::threaded::ThreadedWriter;
 use crate::utils::args::UseColors;
 use crate::utils::logging::init_logger;
-
-mod benching;
-mod kernel_controller;
-mod output;
-mod utils;
 
 fn main() -> OCLStreamResult<()> {
     let opts: Opts = Opts::from_args();

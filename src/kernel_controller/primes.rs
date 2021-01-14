@@ -89,15 +89,20 @@ impl KernelController {
         local_size: usize,
         sem: &Semaphore,
     ) -> ocl::Result<ProfiledResult<Vec<u64>>> {
+        sem.acquire();
         log::trace!("Creating 0u8 output buffer");
         let output_buffer = pro_que
             .buffer_builder()
             .len(numbers.len())
             .fill_val(0u8)
             .build()?;
+        sem.release();
 
+        sem.acquire();
         let input_buffer = numbers.to_ocl_buffer(pro_que)?;
+        sem.release();
 
+        sem.acquire();
         log::trace!("Building 'check_prime' kernel");
         let kernel = pro_que
             .kernel_builder("check_prime")
@@ -106,11 +111,15 @@ impl KernelController {
             .arg(&output_buffer)
             .global_work_size(numbers.len())
             .build()?;
+        sem.release();
         let duration = enqueue_profiled(pro_que, &kernel, &sem)?;
 
         log::trace!("Reading output");
         let mut output = vec![0u8; output_buffer.len()];
+        sem.acquire();
         output_buffer.read(&mut output).enq()?;
+        sem.release();
+
         log::trace!("Filtering primes");
         let primes = map_gpu_prime_result(numbers, output);
         log::trace!("Calculated {} primes", primes.len());
@@ -127,17 +136,25 @@ impl KernelController {
         prime_cache: Arc<Mutex<Vec<u64>>>,
         sem: &Semaphore,
     ) -> ocl::Result<ProfiledResult<Vec<u64>>> {
+        sem.acquire();
         let prime_buffer = prime_cache.lock().to_ocl_buffer(pro_que)?;
-        let input_buffer = numbers.to_ocl_buffer(pro_que)?;
+        sem.release();
 
+        sem.acquire();
+        let input_buffer = numbers.to_ocl_buffer(pro_que)?;
+        sem.release();
+
+        sem.acquire();
         log::trace!("Creating output buffer");
         let output_buffer = pro_que
             .buffer_builder()
             .len(numbers.len())
             .fill_val(0u8)
             .build()?;
+        sem.release();
 
         log::trace!("Building 'check_prime_cached' kernel");
+        sem.acquire();
         let kernel = pro_que
             .kernel_builder("check_prime_cached")
             .local_work_size(local_size)
@@ -147,12 +164,15 @@ impl KernelController {
             .arg(&output_buffer)
             .global_work_size(numbers.len())
             .build()?;
+        sem.release();
 
         let duration = enqueue_profiled(pro_que, &kernel, sem)?;
 
         log::trace!("Reading output");
         let mut output = vec![0u8; output_buffer.len()];
+        sem.acquire();
         output_buffer.read(&mut output).enq()?;
+        sem.release();
 
         log::trace!("Mapping prime result");
         let primes = map_gpu_prime_result(numbers, output);
