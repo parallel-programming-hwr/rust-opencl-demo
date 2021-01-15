@@ -13,6 +13,7 @@ mod output;
 mod utils;
 
 use std::fs::{File, OpenOptions};
+use std::io;
 use std::io::BufWriter;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -32,6 +33,7 @@ use crate::output::threaded::ThreadedWriter;
 use crate::utils::args::UseColors;
 use crate::utils::logging::init_logger;
 use chrono::Local;
+use log::LevelFilter;
 
 fn main() -> OCLStreamResult<()> {
     let opts: Opts = Opts::from_args();
@@ -51,20 +53,34 @@ fn calculate_primes(
     prime_opts: CalculatePrimes,
     mut controller: KernelController,
 ) -> OCLStreamResult<()> {
+    let use_stdout = prime_opts.general_options.stdout;
+    if use_stdout {
+        log::set_max_level(LevelFilter::Warn);
+    }
     set_output_colored(prime_opts.general_options.color);
     controller.set_concurrency(prime_opts.general_options.threads);
 
     let csv_file = open_write_buffered(&prime_opts.timings_file);
     let mut csv_writer =
         ThreadedCSVWriter::new(csv_file, &["timestamp", "first", "count", "gpu_duration"]);
-    let output_file = open_write_buffered(&prime_opts.output_file);
 
-    let output_writer = ThreadedWriter::new(output_file, |v: Vec<u64>| {
-        v.iter()
-            .map(|v| v.to_string())
-            .fold("".to_string(), |a, b| format!("{}\n{}", a, b))
-            .into_bytes()
-    });
+    let output_writer = if use_stdout {
+        ThreadedWriter::new(io::stdout(), |v: Vec<u64>| {
+            v.iter()
+                .map(|v| v.to_string())
+                .fold("".to_string(), |a, b| format!("{}\n{}", a, b))
+                .into_bytes()
+        })
+    } else {
+        let output_file = open_write_buffered(&prime_opts.output_file);
+
+        ThreadedWriter::new(output_file, |v: Vec<u64>| {
+            v.iter()
+                .map(|v| v.to_string())
+                .fold("".to_string(), |a, b| format!("{}\n{}", a, b))
+                .into_bytes()
+        })
+    };
 
     let mut stream = controller.calculate_primes(
         prime_opts.start_offset,
@@ -101,8 +117,13 @@ fn calculate_primes(
 
 /// Benchmarks the local size used for calculations
 fn bench_local_size(opts: BenchLocalSize, mut controller: KernelController) -> OCLStreamResult<()> {
+    let use_stdout = opts.bench_options.general_options.stdout;
+    if use_stdout {
+        log::set_max_level(LevelFilter::Warn);
+    }
     set_output_colored(opts.bench_options.general_options.color);
     controller.set_concurrency(opts.bench_options.general_options.threads);
+
     let bench_output = opts
         .bench_options
         .benchmark_file
@@ -116,19 +137,17 @@ fn bench_local_size(opts: BenchLocalSize, mut controller: KernelController) -> O
             opts.bench_options.calculation_steps,
             Local::now().format("%Y%m%d%H%M%S")
         )));
-    let bench_writer = open_write_buffered(&bench_output);
-    let csv_writer = ThreadedCSVWriter::new(
-        bench_writer,
-        &[
-            "timestamp",
-            "local_size",
-            "global_size",
-            "calc_count",
-            "write_duration",
-            "gpu_duration",
-            "read_duration",
-        ],
-    );
+    let csv_columns = [
+        "timestamp",
+        "local_size",
+        "global_size",
+        "calc_count",
+        "write_duration",
+        "gpu_duration",
+        "read_duration",
+    ];
+
+    let csv_writer = get_csv_writer(&bench_output, &csv_columns, use_stdout);
     let stream = controller.bench_local_size(
         opts.global_size,
         opts.local_size_start,
@@ -142,13 +161,32 @@ fn bench_local_size(opts: BenchLocalSize, mut controller: KernelController) -> O
     Ok(())
 }
 
+/// Returns a csv writer to either stdout or a file
+fn get_csv_writer(
+    bench_output: &PathBuf,
+    csv_columns: &[&str; 7],
+    use_stdout: bool,
+) -> ThreadedCSVWriter {
+    if use_stdout {
+        ThreadedCSVWriter::new(io::stdout(), csv_columns)
+    } else {
+        let bench_writer = open_write_buffered(&bench_output);
+        ThreadedCSVWriter::new(bench_writer, csv_columns)
+    }
+}
+
 /// Benchmarks the global size used for calculations
 fn bench_global_size(
     opts: BenchGlobalSize,
     mut controller: KernelController,
 ) -> OCLStreamResult<()> {
+    let use_stdout = opts.bench_options.general_options.stdout;
+    if use_stdout {
+        log::set_max_level(LevelFilter::Warn);
+    }
     set_output_colored(opts.bench_options.general_options.color);
     controller.set_concurrency(opts.bench_options.general_options.threads);
+
     let bench_output = opts
         .bench_options
         .benchmark_file
@@ -162,19 +200,17 @@ fn bench_global_size(
             opts.bench_options.calculation_steps,
             Local::now().format("%Y%m%d%H%M%S")
         )));
-    let bench_writer = open_write_buffered(&bench_output);
-    let csv_writer = ThreadedCSVWriter::new(
-        bench_writer,
-        &[
-            "timestamp",
-            "local_size",
-            "global_size",
-            "calc_count",
-            "write_duration",
-            "gpu_duration",
-            "read_duration",
-        ],
-    );
+    let csv_columns = [
+        "timestamp",
+        "local_size",
+        "global_size",
+        "calc_count",
+        "write_duration",
+        "gpu_duration",
+        "read_duration",
+    ];
+    let csv_writer = get_csv_writer(&bench_output, &csv_columns, use_stdout);
+
     let stream = controller.bench_global_size(
         opts.local_size,
         opts.global_size_start,

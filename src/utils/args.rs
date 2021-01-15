@@ -143,6 +143,10 @@ pub struct GeneralOptions {
     /// number of used threads
     #[structopt(short = "p", long = "threads", default_value = "2")]
     pub threads: usize,
+
+    /// Print results to stdout instead of writing them into a file
+    #[structopt(long = "stdout")]
+    pub stdout: bool,
 }
 
 arg_enum! {
