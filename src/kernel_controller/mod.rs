@@ -46,6 +46,8 @@ impl KernelController {
             DeviceInfo::DriverVersion,
             DeviceInfo::ExecutionCapabilities,
             DeviceInfo::MaxComputeUnits,
+            DeviceInfo::MaxWorkItemSizes,
+            DeviceInfo::MaxWorkItemDimensions,
             DeviceInfo::MaxWorkGroupSize,
             DeviceInfo::MaxClockFrequency,
             DeviceInfo::GlobalMemSize,

@@ -67,6 +67,10 @@ pub struct CalculatePrimes {
     /// If the calculated prime numbers should be validated on the cpu by a simple prime algorithm
     #[structopt(long = "cpu-validate")]
     pub cpu_validate: bool,
+
+    /// Calculates primes on the cpu instead using the same algorithm
+    #[structopt(long = "use-cpu")]
+    pub use_cpu: bool,
 }
 
 #[derive(StructOpt, Clone, Debug)]

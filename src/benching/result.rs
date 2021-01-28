@@ -12,7 +12,7 @@ pub struct ProfiledResult<T>
 where
     T: Send + Sync + Clone,
 {
-    gpu_duration: Duration,
+    duration: Duration,
     value: T,
 }
 
@@ -20,17 +20,14 @@ impl<T> ProfiledResult<T>
 where
     T: Send + Sync + Clone,
 {
-    /// Creates a new profiled result with the given duraiton and value
-    pub fn new(gpu_duration: Duration, value: T) -> Self {
-        Self {
-            gpu_duration,
-            value,
-        }
+    /// Creates a new profiled result with the given duration and value
+    pub fn new(duration: Duration, value: T) -> Self {
+        Self { duration, value }
     }
 
-    /// Returns the execution duration on the gpu
-    pub fn gpu_duration(&self) -> &Duration {
-        &self.gpu_duration
+    /// Returns the execution duration
+    pub fn duration(&self) -> &Duration {
+        &self.duration
     }
 
     /// Returns the value of the result

@@ -62,7 +62,7 @@ fn calculate_primes(
 
     let csv_file = open_write_buffered(&prime_opts.timings_file);
     let mut csv_writer =
-        ThreadedCSVWriter::new(csv_file, &["timestamp", "first", "count", "gpu_duration"]);
+        ThreadedCSVWriter::new(csv_file, &["timestamp", "first", "count", "duration"]);
 
     let output_writer = if use_stdout {
         ThreadedWriter::new(io::stdout(), |v: Vec<u64>| {
@@ -82,13 +82,21 @@ fn calculate_primes(
         })
     };
 
-    let mut stream = controller.calculate_primes(
-        prime_opts.start_offset,
-        prime_opts.max_number,
-        prime_opts.numbers_per_step,
-        prime_opts.local_size.unwrap_or(128),
-        !prime_opts.no_cache,
-    );
+    let mut stream = if prime_opts.use_cpu {
+        controller.calculate_primes_cpu(
+            prime_opts.start_offset,
+            prime_opts.max_number,
+            prime_opts.numbers_per_step,
+        )
+    } else {
+        controller.calculate_primes(
+            prime_opts.start_offset,
+            prime_opts.max_number,
+            prime_opts.numbers_per_step,
+            prime_opts.local_size.unwrap_or(128),
+            !prime_opts.no_cache,
+        )
+    };
     while let Ok(r) = stream.next() {
         let primes = r.value();
         if prime_opts.cpu_validate {
@@ -98,14 +106,14 @@ fn calculate_primes(
         log::debug!(
             "Calculated {} primes in {:?}, offset: {}",
             primes.len(),
-            r.gpu_duration(),
+            r.duration(),
             first
         );
         csv_writer.add_row(vec![
             Local::now().format("%Y-%m-%dT%H:%M:%S.%f").to_string(),
             first.to_string(),
             primes.len().to_string(),
-            duration_to_ms_string(r.gpu_duration()),
+            duration_to_ms_string(r.duration()),
         ]);
         output_writer.write(primes.clone());
     }

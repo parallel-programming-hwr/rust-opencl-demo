@@ -783,6 +783,7 @@ dependencies = [
  "indicatif",
  "lazy_static",
  "log",
+ "num_cpus",
  "ocl",
  "ocl-stream",
  "parking_lot",

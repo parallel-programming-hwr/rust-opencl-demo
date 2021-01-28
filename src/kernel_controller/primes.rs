@@ -21,6 +21,49 @@ use std_semaphore::Semaphore;
 const MEMORY_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
 
 impl KernelController {
+    /// Calculates prime number on the cpu
+    pub fn calculate_primes_cpu(
+        &mut self,
+        mut start: u64,
+        stop: u64,
+        step: usize,
+    ) -> OCLStream<ProfiledResult<Vec<u64>>> {
+        if start % 2 == 0 {
+            start += 1;
+        }
+        log::debug!(
+            "Calculating primes between {} and {} with {} number per step on the cpu",
+            start,
+            stop,
+            step,
+        );
+        let offset = Arc::new(AtomicU64::new(start));
+        let pb = get_progress_bar((stop - start) / (step * 2) as u64);
+
+        self.executor.execute_bounded(step * 10, move |ctx| {
+            loop {
+                if offset.load(Ordering::SeqCst) >= stop {
+                    log::trace!("Stop reached.");
+                    break;
+                }
+                let offset = offset.fetch_add(step as u64 * 2, Ordering::SeqCst);
+                log::trace!("Calculating {} primes beginning from {}", step, offset);
+                let start = Instant::now();
+
+                let primes = (offset..(step as u64 * 2 + offset))
+                    .step_by(2)
+                    .filter(|n| is_prime(*n))
+                    .collect::<Vec<u64>>();
+
+                ctx.sender()
+                    .send(ProfiledResult::new(start.elapsed(), primes))?;
+                pb.tick();
+            }
+
+            Ok(())
+        })
+    }
+
     /// Calculates prime numbers on the gpu
     pub fn calculate_primes(
         &self,
@@ -199,29 +242,8 @@ fn get_primes(max_number: u64) -> Vec<u64> {
     let mut num = 1;
 
     while num < max_number {
-        let mut is_prime = true;
+        let is_prime = is_prime(num);
 
-        if num == 2 || num == 3 {
-            is_prime = true;
-        } else if num == 1 || num % 2 == 0 {
-            is_prime = false;
-        } else {
-            let check_stop = (num as f64).sqrt().ceil() as u64;
-
-            if check_stop <= 9 {
-                for i in (3..check_stop).step_by(2) {
-                    if num % i == 0 {
-                        is_prime = false;
-                    }
-                }
-            } else {
-                for i in (9..(check_stop + 6)).step_by(6) {
-                    if num % (i - 2) == 0 || num % (i - 4) == 0 {
-                        is_prime = false;
-                    }
-                }
-            }
-        }
         if is_prime {
             primes.push(num)
         }
@@ -236,22 +258,32 @@ fn get_primes(max_number: u64) -> Vec<u64> {
     primes
 }
 
-/// Checks if a number is a prime number
-pub fn is_prime(number: u64) -> bool {
-    if number == 2 || number == 3 {
-        return true;
-    }
-    if number == 1 || number % 2 == 0 {
-        return false;
-    }
-    let limit = (number as f64).sqrt().ceil() as u64;
-    for i in (3..limit).step_by(2) {
-        if number % i == 0 {
-            return false;
+/// Checks if a given number is a prime number
+pub(crate) fn is_prime(num: u64) -> bool {
+    let mut is_prime = true;
+
+    if num == 2 || num == 3 {
+        is_prime = true;
+    } else if num == 1 || num % 2 == 0 {
+        is_prime = false;
+    } else {
+        let check_stop = (num as f64).sqrt().ceil() as u64;
+
+        if check_stop <= 9 {
+            for i in (3..check_stop).step_by(2) {
+                if num % i == 0 {
+                    is_prime = false;
+                }
+            }
+        } else {
+            for i in (9..(check_stop + 6)).step_by(6) {
+                if num % (i - 2) == 0 || num % (i - 4) == 0 {
+                    is_prime = false;
+                }
+            }
         }
     }
-
-    return true;
+    is_prime
 }
 
 #[inline]
