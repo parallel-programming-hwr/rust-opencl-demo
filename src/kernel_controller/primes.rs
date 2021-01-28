@@ -57,7 +57,7 @@ impl KernelController {
 
                 ctx.sender()
                     .send(ProfiledResult::new(start.elapsed(), primes))?;
-                pb.tick();
+                pb.inc(1);
             }
 
             Ok(())
