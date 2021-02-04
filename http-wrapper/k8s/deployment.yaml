@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rust-opencl-demo
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rust-opencl-demo
+  template:
+    metadata:
+      labels:
+        app: rust-opencl-demo
+    spec:
+      containers:
+      - name: rust-opencl-demo
+        image: leonnicolas/rust-opencl-demo-wrapper
+        args:
+          - --command=rust-opencl-demo
+          - --args=calculate-primes,--end,1000,--local-size,256,--numbers-per-step,12288,--stdout
+        env:
+          - name: LD_LIBRARY_PATH
+            value: /usr/lib/x86_64-linux-gnu:/usr/local/nvidia
+        livenessProbe:
+          httpGet:
+            path: /status
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 5
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+      tolerations:
+      - key: nvidia.com/gpu
+        effect: NoSchedule
+        operator: Exists
