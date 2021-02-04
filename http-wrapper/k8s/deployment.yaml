@@ -7,11 +7,11 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app: rust-opencl-demo
+      app.kubernetes.io/name: rust-opencl-demo
   template:
     metadata:
       labels:
-        app: rust-opencl-demo
+        app.kubernetes.io/name: rust-opencl-demo
     spec:
       containers:
       - name: rust-opencl-demo
@@ -37,3 +37,18 @@ spec:
       - key: nvidia.com/gpu
         effect: NoSchedule
         operator: Exists
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: rust-opencl-demo
+  labels:
+    app.kubernetes.io/name: rust-opencl-demo
+spec: 
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080 
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: rust-opencl-demo
